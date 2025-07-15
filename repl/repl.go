@@ -3,6 +3,7 @@ package repl
 import (
 	"bigsby/lsm"
 	"bufio"
+	"flag"
 	"fmt"
 	"io"
 	"strings"
@@ -10,62 +11,61 @@ import (
 
 const PROMPT = ">> "
 
-func insert(db *lsm.LSMTree, out io.Writer, args ...string) {
+func insert(db *lsm.LSMTree, out io.Writer, args ...string) error {
 	if len(args) < 2 {
-		io.WriteString(out, "Not enough arguments (expected 2).\n")
-		return
+		return fmt.Errorf("Not enough arguments (expected 2).")
 	}
 	key := args[0]
 	value := strings.Join(args[1:], " ")
 	err := db.Insert(key, value)
 	if err != nil {
-		io.WriteString(out, fmt.Sprintf("Failed to insert: %s\n", err))
+		return err
 	}
 	io.WriteString(out, fmt.Sprintf("Inserted [%s, %s]\n", key, value))
+	return nil
 }
 
-func search(db *lsm.LSMTree, out io.Writer, args ...string) {
+func search(db *lsm.LSMTree, out io.Writer, args ...string) error {
 	if len(args) < 1 {
-		io.WriteString(out, "Not enough arguments (expected 1).\n")
-		return
+		return fmt.Errorf("Not enough arguments (expected 1).")
 	}
 	key := args[0]
 	value, err := db.Search(key)
 	if err != nil {
-		io.WriteString(out, fmt.Sprintf("Failed to search: %s\n", err))
-		return
+		return err
 	}
 
-	if value == nil {
-		io.WriteString(out, fmt.Sprintf("No value found for key %s\n", key))
-	} else {
+	if value != nil {
 		io.WriteString(out, *value+"\n")
 	}
-
+	return nil
 }
 
-func remove(db *lsm.LSMTree, out io.Writer, args ...string) {
+func remove(db *lsm.LSMTree, out io.Writer, args ...string) error {
 	if len(args) < 1 {
-		io.WriteString(out, "Not enough arguments (expected 1).\n")
-		return
+		return fmt.Errorf("Not enough arguments (expected 1).")
 	}
 	key := args[0]
 	err := db.Remove(key)
 	if err != nil {
-		io.WriteString(out, fmt.Sprintf("Failed to remove: %s\n", err))
-		return
+		return err
 	}
 	io.WriteString(out, fmt.Sprintf("Removed key %s\n", key))
+	return nil
 }
 
-func flush(db *lsm.LSMTree, out io.Writer, args ...string) {
-	db.Flush()
+func flush(db *lsm.LSMTree, out io.Writer) error {
+	err := db.Flush()
+	if err != nil {
+		return err
+	}
+	io.WriteString(out, "Flushed memtable to disk.\n")
+	return nil
 }
 
-func print(db *lsm.LSMTree, out io.Writer, args ...string) {
+func printObject(db *lsm.LSMTree, out io.Writer, args ...string) error {
 	if len(args) < 1 {
-		io.WriteString(out, "Not enough arguments (expected 1).\n")
-		return
+		return fmt.Errorf("Not enough arguments (expected 1).")
 	}
 
 	obj := args[0]
@@ -76,17 +76,24 @@ func print(db *lsm.LSMTree, out io.Writer, args ...string) {
 		db.PrintSegment(out)
 
 	default:
-		io.WriteString(out, fmt.Sprintf("Don't know how to print %s.\n", obj))
+		return fmt.Errorf("Don't know how to print %s.", obj)
 	}
+	return nil
 }
 
 func Start(in io.Reader, out io.Writer) {
+
+	dataDirPtr := flag.String("data-dir", "./.bigsby", "Directory to store data.")
+	compactionLimitPtr := flag.Int("compaction-limit", 1000, "Limit (bytes) for compaction")
+	flag.Parse()
+
 	scanner := bufio.NewScanner(in)
 
 	db, err := lsm.New(&lsm.Settings{
-		CompactionLimit: 1000,
-		DataDirectory:   "./",
+		CompactionLimit: *compactionLimitPtr,
+		DataDirectory:   *dataDirPtr,
 	})
+	defer db.Flush()
 
 	if err != nil {
 		panic("Could not create db")
@@ -106,22 +113,27 @@ func Start(in io.Reader, out io.Writer) {
 
 		parts := strings.Split(line, " ")
 		cmd, args := parts[0], parts[1:]
+		var err error
 
 		switch cmd {
 		case "insert", "i":
-			insert(db, out, args...)
+			err = insert(db, out, args...)
 		case "search", "s":
-			search(db, out, args...)
+			err = search(db, out, args...)
 		case "remove", "r":
-			remove(db, out, args...)
+			err = remove(db, out, args...)
 		case "print", "p":
-			print(db, out, args...)
+			err = printObject(db, out, args...)
 		case "flush", "f":
-			flush(db, out, args...)
+			err = flush(db, out)
 		case "quit", "q":
 			running = false
 		default:
 			io.WriteString(out, fmt.Sprintf("Unknown command: %s\n", cmd))
+		}
+
+		if err != nil {
+			io.WriteString(out, fmt.Sprintf("Error executing command %s: %v\n", cmd, err))
 		}
 	}
 }
