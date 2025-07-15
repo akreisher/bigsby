@@ -42,7 +42,7 @@ func validateRedBlackTree[K cmp.Ordered, V any](node *Node[K, V]) (blackDepth ui
 }
 
 func TestInsertRoot(t *testing.T) {
-	tree := RedBlackTree[int32, int32]{}
+	tree := Tree[int32, int32]{}
 	if tree.root != nil {
 		t.Error("Root not nil at init?")
 	}
@@ -65,7 +65,7 @@ func TestInsertRoot(t *testing.T) {
 }
 
 func TestManyInsert(t *testing.T) {
-	tree := RedBlackTree[int32, int32]{}
+	tree := Tree[int32, int32]{}
 	N := 1000
 	for range N {
 		key := rand.Int31()
@@ -86,7 +86,7 @@ func TestManyInsert(t *testing.T) {
 }
 
 func TestManyRemove(t *testing.T) {
-	tree := RedBlackTree[int32, int32]{}
+	tree := Tree[int32, int32]{}
 	N := 1000
 	keys := make([]int32, N)
 	for i := range N {

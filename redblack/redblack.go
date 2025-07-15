@@ -3,6 +3,8 @@ package redblack
 import (
 	"cmp"
 	"fmt"
+	"io"
+	"iter"
 )
 
 type Color bool
@@ -26,10 +28,6 @@ type Node[K cmp.Ordered, V any] struct {
 	value    V
 }
 
-type RedBlackTree[K cmp.Ordered, V any] struct {
-	root *Node[K, V]
-}
-
 func (n *Node[K, V]) String() string {
 	if n.color == Black {
 		return fmt.Sprintf("Black(%v)", n.key)
@@ -37,6 +35,11 @@ func (n *Node[K, V]) String() string {
 	return fmt.Sprintf("Red(%v)", n.key)
 
 }
+
+type Tree[K cmp.Ordered, V any] struct {
+	root *Node[K, V]
+}
+
 func getHeight[K cmp.Ordered, V any](node *Node[K, V]) uint64 {
 	if node == nil {
 		return 0
@@ -52,7 +55,7 @@ func getHeight[K cmp.Ordered, V any](node *Node[K, V]) uint64 {
 
 }
 
-func (t *RedBlackTree[K, V]) Height() uint64 {
+func (t *Tree[K, V]) Height() uint64 {
 	return getHeight(t.root)
 }
 
@@ -66,22 +69,49 @@ func printNode[K cmp.Ordered, V any](node Node[K, V], buffer string) {
 	fmt.Printf("%s+-%s%v\033[0m\n", buffer, color, node.key)
 }
 
-func printSubtree[K cmp.Ordered, V any](node Node[K, V], prfRight string, prfLeft string, buffer string) {
+func printSubtree[K cmp.Ordered, V any](node Node[K, V], prfRight string, prfLeft string, buffer string, out io.Writer) {
 	if node.children[Right] != nil {
-		printSubtree(*node.children[Right], "  ", "| ", buffer+prfRight)
+		printSubtree(*node.children[Right], "  ", "| ", buffer+prfRight, out)
 
 	}
 	printNode(node, buffer)
 	if node.children[Left] != nil {
-		printSubtree(*node.children[Left], "| ", "  ", buffer+prfLeft)
+		printSubtree(*node.children[Left], "| ", "  ", buffer+prfLeft, out)
 	}
 }
 
-func (t *RedBlackTree[K, V]) Print() {
+func (t *Tree[K, V]) Print(out io.Writer) {
 	if t.root == nil {
 		fmt.Println("<NIL>")
+		return
 	}
-	printSubtree(*t.root, "  ", "  ", "")
+	printSubtree(*t.root, "  ", "  ", "", out)
+}
+
+func inOrderIter[K cmp.Ordered, V any](node *Node[K, V], yield func(K, V) bool) bool {
+	if node == nil {
+		return true
+	}
+	if node.children[Left] != nil {
+		if !inOrderIter(node.children[Left], yield) {
+			return false
+		}
+	}
+	if !yield(node.key, node.value) {
+		return false
+	}
+	if node.children[Right] != nil {
+		if !inOrderIter(node.children[Right], yield) {
+			return false
+		}
+	}
+	return true
+}
+
+func (t *Tree[K, V]) InOrder() iter.Seq2[K, V] {
+	return func(yield func(K, V) bool) {
+		inOrderIter(t.root, yield)
+	}
 }
 
 func (n *Node[K, V]) Direction() Direction {
@@ -92,7 +122,7 @@ func (n *Node[K, V]) Direction() Direction {
 	}
 }
 
-func rotateSubtree[K cmp.Ordered, V any](tree *RedBlackTree[K, V], sub *Node[K, V], dir Direction) *Node[K, V] {
+func rotateSubtree[K cmp.Ordered, V any](tree *Tree[K, V], sub *Node[K, V], dir Direction) *Node[K, V] {
 	subParent := sub.parent
 	newRoot := sub.children[1-dir]
 	newChild := newRoot.children[dir]
@@ -142,7 +172,7 @@ func searchInOrderHelper[K cmp.Ordered, V any](node *Node[K, V], key K) *Node[K,
 	return nil
 }
 
-func (t *RedBlackTree[K, V]) Search(key K) *V {
+func (t *Tree[K, V]) Search(key K) *V {
 	node := searchInOrderHelper(t.root, key)
 	if node != nil && node.key == key {
 		return &node.value
@@ -150,7 +180,7 @@ func (t *RedBlackTree[K, V]) Search(key K) *V {
 	return nil
 }
 
-func (t *RedBlackTree[K, V]) Insert(key K, value V) {
+func (t *Tree[K, V]) Insert(key K, value V) {
 	if t.root == nil {
 		node := Node[K, V]{key: key, value: value, color: Red}
 		t.root = &node
@@ -237,7 +267,7 @@ func (t *RedBlackTree[K, V]) Insert(key K, value V) {
 	// Nothing else to do at this point.
 }
 
-func removeBlackLeafNode[K cmp.Ordered, V any](tree *RedBlackTree[K, V], node *Node[K, V]) {
+func removeBlackLeafNode[K cmp.Ordered, V any](tree *Tree[K, V], node *Node[K, V]) {
 	var sibling *Node[K, V]
 	var distantNephew *Node[K, V]
 	var closeNephew *Node[K, V]
@@ -336,7 +366,7 @@ case6:
 	distantNephew.color = Black
 }
 
-func removeNode[K cmp.Ordered, V any](tree *RedBlackTree[K, V], node *Node[K, V]) {
+func removeNode[K cmp.Ordered, V any](tree *Tree[K, V], node *Node[K, V]) {
 	parent := node.parent
 
 	// Simple cases
@@ -395,7 +425,7 @@ func removeNode[K cmp.Ordered, V any](tree *RedBlackTree[K, V], node *Node[K, V]
 	removeBlackLeafNode(tree, node)
 }
 
-func (t *RedBlackTree[K, V]) Remove(key K) {
+func (t *Tree[K, V]) Remove(key K) {
 	node := searchInOrderHelper(t.root, key)
 	// Not in tree
 	if node == nil || node.key != key {
