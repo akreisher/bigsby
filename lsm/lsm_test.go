@@ -1,7 +1,6 @@
 package lsm
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,16 +31,17 @@ func TestWriteSegment(t *testing.T) {
 		t.Error("Expected empty memtable after write")
 	}
 
-	segmentPath := filepath.Join(segmentDirectory, C1)
-	dat, err := os.ReadFile(segmentPath)
+	entries, err := tree.segment.Read()
 	if err != nil {
 		t.Errorf("Failed to read segment file: %v", err)
 	}
 
 	// Make sure data is sorted.
-	expected := "good,world\nhello,world\nzzz,world\n"
-	if string(dat) != expected {
-		t.Errorf("Got unexpected segment data: %s", dat)
+	expectedEntries := []string{"good,world", "hello,world", "zzz,world"}
+	for i, expected := range expectedEntries {
+		if entries[i] != expected {
+			t.Errorf("Got unexpected segment data: %s (expected %s)", entries[i], expected)
+		}
 	}
 }
 
@@ -68,17 +68,17 @@ func TestMergeInserts(t *testing.T) {
 	if tree.memtable.Height() != 0 || tree.memtableSize != 0 {
 		t.Error("Expected empty memtable after write")
 	}
-
-	segmentPath := filepath.Join(segmentDirectory, C1)
-	dat, err := os.ReadFile(segmentPath)
+	entries, err := tree.segment.Read()
 	if err != nil {
 		t.Errorf("Failed to read segment file: %v", err)
 	}
 
 	// Make sure data is sorted.
-	expected := "good,world\nhello,world\nzzz,world\n"
-	if string(dat) != expected {
-		t.Errorf("Got unexpected segment data: %s", dat)
+	expectedEntries := []string{"good,world", "hello,world", "zzz,world"}
+	for i, expected := range expectedEntries {
+		if entries[i] != expected {
+			t.Errorf("Got unexpected segment data: %s (expected %s)", entries[i], expected)
+		}
 	}
 
 	tree.Insert("zzz", "sleep")
@@ -86,15 +86,17 @@ func TestMergeInserts(t *testing.T) {
 	tree.Insert("hello", "world")
 	tree.Insert("new", "entry")
 
-	dat, err = os.ReadFile(segmentPath)
+	entries, err = tree.segment.Read()
 	if err != nil {
 		t.Errorf("Failed to read segment file: %v", err)
 	}
 
-	// Make sure data in segment was updated appropriately.
-	expected = "good,bye\nhello,world\nnew,entry\nzzz,sleep\n"
-	if string(dat) != expected {
-		t.Errorf("Got unexpected segment data: %s", dat)
+	// Make sure data is sorted.
+	expectedEntries = []string{"good,bye", "hello,world", "new,entry", "zzz,sleep"}
+	for i, expected := range expectedEntries {
+		if entries[i] != expected {
+			t.Errorf("Got unexpected segment data: %s (expected %s)", entries[i], expected)
+		}
 	}
 }
 
@@ -110,7 +112,6 @@ func TestReadFromMemtable(t *testing.T) {
 	)
 
 	if err != nil {
-
 		t.Error(err)
 	}
 
@@ -118,10 +119,13 @@ func TestReadFromMemtable(t *testing.T) {
 	tree.Insert("good", "night")
 	tree.Insert("hello", "world")
 
-	segmentPath := filepath.Join(segmentDirectory, C1)
-	_, err = os.Stat(segmentPath)
-	if !os.IsNotExist(err) {
-		t.Errorf("Found unexpected segment file")
+	data, err := tree.segment.Read()
+	if err != nil {
+		t.Errorf("Failed to read segment file: %v", err)
+	}
+
+	if len(data) != 0 {
+		t.Errorf("Segment data is not empty?")
 	}
 
 	val, err := tree.Search("hello")
@@ -215,11 +219,8 @@ func TestRemoveFromMemtable(t *testing.T) {
 	}
 
 	segmentData, err := tree.segment.Read()
-	fmt.Printf("SEG DATA %s\n", segmentData)
-
 	valPtr, err = tree.Search("hello")
 	if err != nil {
-		fmt.Println("HERE")
 		t.Error(err)
 	}
 
