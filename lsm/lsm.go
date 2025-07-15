@@ -5,7 +5,6 @@ import (
 	"bigsby/sstable"
 	"fmt"
 	"io"
-	"path/filepath"
 	"strings"
 )
 
@@ -26,7 +25,7 @@ type Settings struct {
 	DataDirectory   string
 }
 
-const C1 = "./c1.segment"
+const C1 = "c1"
 
 // TODO: Out-of-band value for this to avoid mixing up values.
 const TOMBSTONE = "<BIGSBY_TOMBSTONE>"
@@ -123,7 +122,7 @@ func (t *LSMTree) Flush() error {
 }
 
 func New(settings *Settings) (*LSMTree, error) {
-	segment, err := sstable.New(filepath.Join(settings.DataDirectory, C1))
+	segment, err := sstable.New(C1, settings.DataDirectory)
 	if err != nil {
 		return nil, err
 	}
@@ -195,7 +194,7 @@ func (t *LSMTree) PrintSegment(out io.Writer) {
 		panic(err)
 	}
 
-	io.WriteString(out, fmt.Sprintf("Segment name: %s\n", t.segment.FileName))
+	io.WriteString(out, fmt.Sprintf("Segment path: %s\n", t.segment.SegmentDirectory))
 	io.WriteString(out, "Table:\n\n")
 	io.WriteString(out, fmt.Sprintf("%v\n", data))
 	io.WriteString(out, "\n")

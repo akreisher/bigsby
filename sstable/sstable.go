@@ -3,25 +3,32 @@ package sstable
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
 type Table struct {
-	FileName string
+	SegmentDirectory string
+	dataDirectory    string
 	// index  map[string, int]
 	// filter BloomFilter
 }
 
-func New(fileName string) (*Table, error) {
+const DataFileName = "segment_data"
+
+func New(segmentName string, dataDirectory string) (*Table, error) {
+
+	segmentDirectory := filepath.Join(dataDirectory, segmentName)
+	os.MkdirAll(segmentDirectory, os.ModePerm)
 	// TODO: Read segment meta-data for existing
 	// segment to initialize index/bloom filter.
 	return &Table{
-		FileName: fileName,
+		SegmentDirectory: segmentDirectory,
 	}, nil
 }
 
 func (t *Table) Read() ([]string, error) {
-	dat, err := os.ReadFile(t.FileName)
+	dat, err := os.ReadFile(filepath.Join(t.SegmentDirectory, DataFileName))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return []string{}, nil
@@ -38,7 +45,7 @@ func (t *Table) Read() ([]string, error) {
 }
 
 func (t *Table) Write(data []string) error {
-	f, err := os.Create(t.FileName)
+	f, err := os.Create(filepath.Join(t.SegmentDirectory, DataFileName))
 	if err != nil {
 		return fmt.Errorf("Failed to open segment: %w", err)
 	}
