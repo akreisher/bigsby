@@ -15,7 +15,7 @@ const Tombstone = "<BIGSBY_TOMBSTONE>"
 
 func EncodeLogEntry(entry EntryData) []byte {
 	keySize, valSize := len(entry.Key), len(entry.Value)
-	logSize := keySize + valSize + 8
+	logSize := keySize + valSize + 8 // key + val + 2 * uint32_len
 	buf := make([]byte, logSize)
 	binary.BigEndian.PutUint32(buf, uint32(keySize))
 	copy(buf[4:], entry.Key)
