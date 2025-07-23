@@ -73,7 +73,7 @@ func printObject(db *lsm.LSMTree, out io.Writer, args ...string) error {
 	case "memtable", "m":
 		db.PrintMemtable(out)
 	case "segment", "s":
-		db.PrintSegment(out)
+		db.PrintSegments(out)
 
 	default:
 		return fmt.Errorf("Don't know how to print %s.", obj)
@@ -83,25 +83,23 @@ func printObject(db *lsm.LSMTree, out io.Writer, args ...string) error {
 
 func Start(in io.Reader, out io.Writer) {
 
+	scanner := bufio.NewScanner(in)
+
 	dataDirPtr := flag.String("data-dir", "./.bigsby", "Directory to store data.")
 	compactionLimitPtr := flag.Int("compaction-limit", 1000, "Limit (bytes) for compaction")
 	flag.Parse()
-
-	scanner := bufio.NewScanner(in)
 
 	db, err := lsm.New(&lsm.Settings{
 		CompactionLimit: *compactionLimitPtr,
 		DataDirectory:   *dataDirPtr,
 	})
-	defer db.Flush()
-
 	if err != nil {
-		panic("Could not create db")
+		panic(fmt.Sprintf("Could not create db: %v", err))
 	}
+	defer db.Flush()
 
 	io.WriteString(out, "Running BigsbyDB\n")
 	running := true
-
 	for running {
 		fmt.Printf(PROMPT)
 		scanned := scanner.Scan()

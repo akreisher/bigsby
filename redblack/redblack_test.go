@@ -13,8 +13,8 @@ func validateRedBlackTree[K cmp.Ordered, V any](node *Node[K, V]) (blackDepth ui
 		return 1, nil
 	}
 
-	left := node.children[Left]
-	right := node.children[Right]
+	left := node.Children[Left]
+	right := node.Children[Right]
 
 	if node.color == Red {
 		if left != nil && left.color == Red {
@@ -43,7 +43,7 @@ func validateRedBlackTree[K cmp.Ordered, V any](node *Node[K, V]) (blackDepth ui
 
 func TestInsertRoot(t *testing.T) {
 	tree := Tree[int32, int32]{}
-	if tree.root != nil {
+	if tree.Root != nil {
 		t.Error("Root not nil at init?")
 	}
 
@@ -51,16 +51,16 @@ func TestInsertRoot(t *testing.T) {
 	var value int32 = 10
 	tree.Insert(key, value)
 
-	if tree.root == nil {
+	if tree.Root == nil {
 		t.Error("Root is nil after insert?")
 	}
 
-	if tree.root.key != key {
-		t.Errorf("Root key is %d (expected %d)", tree.root.key, key)
+	if tree.Root.Key != key {
+		t.Errorf("Root key is %d (expected %d)", tree.Root.Key, key)
 	}
 
-	if tree.root.value != value {
-		t.Errorf("Root value is %d (expected %d)", tree.root.value, value)
+	if tree.Root.Value != value {
+		t.Errorf("Root value is %d (expected %d)", tree.Root.Value, value)
 	}
 }
 
@@ -78,7 +78,7 @@ func TestManyInsert(t *testing.T) {
 		}
 
 		// Tree should remain valid after every insert.
-		_, err := validateRedBlackTree(tree.root)
+		_, err := validateRedBlackTree(tree.Root)
 		if err != nil {
 			t.Errorf("Invalid tree after insert: %v", err)
 		}
@@ -97,7 +97,7 @@ func TestManyRemove(t *testing.T) {
 	}
 
 	// Tree should be valid after every and all inserts.
-	_, err := validateRedBlackTree(tree.root)
+	_, err := validateRedBlackTree(tree.Root)
 	if err != nil {
 		t.Errorf("Invalid tree after insert: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestManyRemove(t *testing.T) {
 			t.Errorf("Could not delete key %d", key)
 		}
 		// Tree should be valid after every remove.
-		_, err := validateRedBlackTree(tree.root)
+		_, err := validateRedBlackTree(tree.Root)
 		if err != nil {
 			t.Errorf("Invalid tree after insert: %v", err)
 		}

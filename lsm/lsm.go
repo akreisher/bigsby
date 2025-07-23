@@ -3,8 +3,14 @@ package lsm
 import (
 	"bigsby/redblack"
 	"bigsby/sstable"
+	"bigsby/storage"
 	"fmt"
 	"io"
+	"math/rand"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -15,103 +21,77 @@ type Node = redblack.Node[KeyType, ValueType]
 
 type LSMTree struct {
 	memtable     Memtable
+	levels       [][]sstable.Table
 	memtableSize int
 	settings     *Settings
-	segment      *sstable.Table
+	segments     [][]sstable.Table
 }
 
 type Settings struct {
-	CompactionLimit int
-	DataDirectory   string
+	CompactionLimit      int
+	DataDirectory        string
+	LevelZeroMaxSegments int
 }
 
-const C1 = "c1"
+const segmentNameLetters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+const segmentSuffix = ".segment"
 
-// TODO: Out-of-band value for this to avoid mixing up values.
-const TOMBSTONE = "<BIGSBY_TOMBSTONE>"
-
-func generateLogString(key KeyType, value ValueType) string {
-	// TODO: Length delimited entries instead of CSV.
-	return key + "," + value + "\n"
+func getSegmentDirectory(dataDirectory string) string {
+	return filepath.Join(dataDirectory, "segments")
 }
 
-func readLogEntry(entry string) (*KeyType, *ValueType, error) {
-	parts := strings.Split(entry, ",")
-	if len(parts) != 2 {
-		return nil, nil, fmt.Errorf("Invalid data found: %s", entry)
+func (t *LSMTree) generateNewSegmentPath(level int) (*string, error) {
+	levelDir := filepath.Join(getSegmentDirectory(t.settings.DataDirectory), strconv.Itoa(level))
+	err := os.MkdirAll(levelDir, os.ModePerm)
+	if err != nil {
+		return nil, err
 	}
-	return &parts[0], &parts[1], nil
-}
 
-func mergeTreeAndSegment(memtable Memtable, segment []string) ([]string, error) {
-	newSegment := make([]string, 0)
-	i := 0
+	for {
+		b := make([]byte, 16)
+		for i := range b {
+			b[i] = segmentNameLetters[rand.Intn(len(segmentNameLetters))]
+		}
 
-	for memKey, memValue := range memtable.InOrder() {
-		// While we still have segment values, we need to compare.
-		if i < len(segment) {
-			segKeyPtr, segValuePtr, err := readLogEntry(segment[i])
-			if err != nil {
-				return nil, err
-			}
-			segKey, segValue := *segKeyPtr, *segValuePtr
-
-			// Write segment key.
-			for segKey < memKey && i < len(segment) {
-				newSegment = append(newSegment, generateLogString(segKey, segValue))
-				i += 1
-				if i < len(segment) {
-					segKeyPtr, segValuePtr, err = readLogEntry(segment[i])
-					if err != nil {
-						return nil, err
-					}
-					segKey, segValue = *segKeyPtr, *segValuePtr
-				}
-			}
-
-			// For duplicates, memtable value takes priority, we still shift the segment.
-			if memValue != TOMBSTONE {
-				newSegment = append(newSegment, generateLogString(memKey, memValue))
-			}
-			if segKey == memKey {
-				i += 1
-			}
-
-		} else {
-			if memValue != TOMBSTONE {
-				newSegment = append(newSegment, generateLogString(memKey, memValue))
-			}
+		path := filepath.Join(levelDir, string(b)+segmentSuffix)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return &path, nil
 		}
 	}
-
-	for i < len(segment) {
-		segKeyPtr, segValuePtr, err := readLogEntry(segment[i])
-		if err != nil {
-			return nil, err
-		}
-		segKey, segValue := *segKeyPtr, *segValuePtr
-		newSegment = append(newSegment, generateLogString(segKey, segValue))
-		i += 1
-	}
-
-	return newSegment, nil
 }
 
 func (t *LSMTree) Flush() error {
 
-	// Read next level segment data.
-	segmentData, err := t.segment.Read()
+	// segmentData, err := t.segment.Read()
+	// if err != nil {
+	// 	return err
+	// }
+
+	entries := make([]storage.EntryData, 0)
+	for k, v := range t.memtable.InOrder() {
+		// While we still have segment values, we need to compare.
+		entries = append(entries, storage.EntryData{
+			Key:   k,
+			Value: v,
+		})
+	}
+
+	path, err := t.generateNewSegmentPath(0)
+	if err != nil {
+		return fmt.Errorf("Error getting level 0 segment path: %w", err)
+	}
+
+	segment, err := sstable.Create(*path, entries)
 	if err != nil {
 		return err
 	}
 
-	mergedData, err := mergeTreeAndSegment(t.memtable, segmentData)
-	if err != nil {
-		return err
+	if len(t.segments) == 0 {
+		t.segments = append(t.segments, make([]sstable.Table, 0))
 	}
+	t.segments[0] = append(t.segments[0], *segment)
 
-	// TODO: Write to new segment so we can keep serving the old one.
-	t.segment.Write(mergedData)
+	// TODO: Merge/Compact
 
 	// Reset memtable.
 	// TODO: Make memtable immutable while writing segment
@@ -122,14 +102,59 @@ func (t *LSMTree) Flush() error {
 }
 
 func New(settings *Settings) (*LSMTree, error) {
-	segment, err := sstable.New(C1, settings.DataDirectory)
+	segmentDirectory := getSegmentDirectory(settings.DataDirectory)
+
+	err := os.MkdirAll(segmentDirectory, os.ModePerm)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Failed to make segment dir: %w", err)
+	}
+
+	segments := make([][]sstable.Table, 0)
+	level := 0
+	for {
+		levelDir := filepath.Join(segmentDirectory, strconv.Itoa(level))
+		files, err := os.ReadDir(levelDir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				break
+			}
+		}
+
+		sort.Slice(files, func(i, j int) bool {
+			iInfo, err := files[i].Info()
+			if err != nil {
+				return false
+			}
+
+			jInfo, err := files[j].Info()
+			if err != nil {
+				return true
+			}
+
+			return iInfo.ModTime().After(jInfo.ModTime())
+		})
+
+		segments = append(segments, make([]sstable.Table, 0))
+		for _, f := range files {
+			if f.IsDir() {
+				continue
+			}
+			if !strings.HasSuffix(f.Name(), segmentSuffix) {
+				continue
+			}
+
+			segment, err := sstable.Load(filepath.Join(levelDir, f.Name()))
+			if err != nil {
+				return nil, fmt.Errorf("Failed to read segment: %w", err)
+			}
+			segments[level] = append(segments[level], *segment)
+		}
+		level++
 	}
 
 	return &LSMTree{
 		settings: settings,
-		segment:  segment,
+		segments: segments,
 	}, nil
 }
 
@@ -147,37 +172,36 @@ func (t *LSMTree) Insert(key KeyType, value ValueType) error {
 	return nil
 }
 
-func (t *LSMTree) Search(key KeyType) (*ValueType, error) {
+func (t *LSMTree) searchSegments(key KeyType) (*ValueType, error) {
+	for _, level := range t.segments {
+		for _, segment := range level {
+			valuePtr, err := segment.Search(key)
+			if err != nil {
+				return nil, err
+			}
 
-	value := t.memtable.Search(key)
-	if value != nil {
-		if *value == TOMBSTONE {
-			return nil, nil
-		}
-
-		return value, nil
-	}
-
-	// Search through segments.
-	entries, err := t.segment.Read()
-	if err != nil {
-		return nil, err
-	}
-	for _, entry := range entries {
-		k, v, err := readLogEntry(entry)
-		if err != nil {
-			return nil, err
-		}
-
-		if key == *k {
-			return v, nil
+			if valuePtr != nil {
+				return valuePtr, nil
+			}
 		}
 	}
 	return nil, nil
 }
 
+func (t *LSMTree) Search(key KeyType) (*ValueType, error) {
+	value := t.memtable.Search(key)
+	if value != nil {
+		if *value == storage.Tombstone {
+			return nil, nil
+		}
+
+		return value, nil
+	}
+	return t.searchSegments(key)
+}
+
 func (t *LSMTree) Remove(key KeyType) error {
-	return t.Insert(key, TOMBSTONE)
+	return t.Insert(key, storage.Tombstone)
 }
 
 func (t *LSMTree) PrintMemtable(out io.Writer) {
@@ -188,14 +212,20 @@ func (t *LSMTree) PrintMemtable(out io.Writer) {
 	io.WriteString(out, "\n")
 }
 
-func (t *LSMTree) PrintSegment(out io.Writer) {
-	data, err := t.segment.Read()
-	if err != nil {
-		panic(err)
-	}
+func (t *LSMTree) PrintSegments(out io.Writer) {
+	for level, segments := range t.segments {
+		io.WriteString(out, fmt.Sprintf("Level %d:\n", level))
+		for _, segment := range segments {
+			data, err := segment.Read()
+			if err != nil {
+				panic(err)
+			}
 
-	io.WriteString(out, fmt.Sprintf("Segment path: %s\n", t.segment.SegmentDirectory))
-	io.WriteString(out, "Table:\n\n")
-	io.WriteString(out, fmt.Sprintf("%v\n", data))
-	io.WriteString(out, "\n")
+			io.WriteString(out, fmt.Sprintf("Segment path: %s\n", segment.FilePath))
+			io.WriteString(out, "Table:\n\n")
+			io.WriteString(out, fmt.Sprintf("%v\n", data))
+			io.WriteString(out, "\n")
+
+		}
+	}
 }
