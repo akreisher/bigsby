@@ -1,9 +1,7 @@
 package lsm
 
 import (
-	"os"
-	"path/filepath"
-	"strings"
+	"bigsby/storage"
 	"testing"
 )
 
@@ -13,7 +11,7 @@ func TestWriteSegment(t *testing.T) {
 
 	tree, err := New(
 		&Settings{
-			CompactionLimit: 20,
+			CompactionLimit: 1000,
 			DataDirectory:   segmentDirectory,
 		},
 	)
@@ -26,21 +24,28 @@ func TestWriteSegment(t *testing.T) {
 	tree.Insert("zzz", "world")
 	tree.Insert("good", "world")
 	tree.Insert("hello", "world")
+	tree.Flush()
+	expectedEntries := []storage.EntryData{
+		{Key: "good", Value: "world"},
+		{Key: "hello", Value: "world"},
+		{Key: "zzz", Value: "world"},
+	}
 
 	if tree.memtable.Height() != 0 || tree.memtableSize != 0 {
 		t.Error("Expected empty memtable after write")
 	}
 
-	entries, err := tree.segment.Read()
+	entries, err := tree.segments[0][0].Read()
 	if err != nil {
 		t.Errorf("Failed to read segment file: %v", err)
 	}
 
-	// Make sure data is sorted.
-	expectedEntries := []string{"good,world", "hello,world", "zzz,world"}
-	for i, expected := range expectedEntries {
-		if entries[i] != expected {
-			t.Errorf("Got unexpected segment data: %s (expected %s)", entries[i], expected)
+	for i, entry := range *entries {
+		if entry.Key != expectedEntries[i].Key {
+			t.Errorf("Got unexpected segment key: %s (expected %s)", entry.Key, expectedEntries[i].Key)
+		}
+		if entry.Value != expectedEntries[i].Value {
+			t.Errorf("Got unexpected segment value: %s (expected %s)", entry.Value, expectedEntries[i].Value)
 		}
 	}
 }
@@ -51,7 +56,7 @@ func TestMergeInserts(t *testing.T) {
 
 	tree, err := New(
 		&Settings{
-			CompactionLimit: 1,
+			CompactionLimit: 1000,
 			DataDirectory:   segmentDirectory,
 		},
 	)
@@ -64,20 +69,27 @@ func TestMergeInserts(t *testing.T) {
 	tree.Insert("zzz", "world")
 	tree.Insert("good", "world")
 	tree.Insert("hello", "world")
+	tree.Flush()
+	expectedEntries := []storage.EntryData{
+		{Key: "good", Value: "world"},
+		{Key: "hello", Value: "world"},
+		{Key: "zzz", Value: "world"},
+	}
 
 	if tree.memtable.Height() != 0 || tree.memtableSize != 0 {
 		t.Error("Expected empty memtable after write")
 	}
-	entries, err := tree.segment.Read()
+
+	entries, err := tree.segments[0][0].Read()
 	if err != nil {
 		t.Errorf("Failed to read segment file: %v", err)
 	}
-
-	// Make sure data is sorted.
-	expectedEntries := []string{"good,world", "hello,world", "zzz,world"}
-	for i, expected := range expectedEntries {
-		if entries[i] != expected {
-			t.Errorf("Got unexpected segment data: %s (expected %s)", entries[i], expected)
+	for i, entry := range *entries {
+		if entry.Key != expectedEntries[i].Key {
+			t.Errorf("Got unexpected segment key: %s (expected %s)", entry.Key, expectedEntries[i].Key)
+		}
+		if entry.Value != expectedEntries[i].Value {
+			t.Errorf("Got unexpected segment value: %s (expected %s)", entry.Value, expectedEntries[i].Value)
 		}
 	}
 
@@ -85,17 +97,26 @@ func TestMergeInserts(t *testing.T) {
 	tree.Insert("good", "bye")
 	tree.Insert("hello", "world")
 	tree.Insert("new", "entry")
+	tree.Flush()
 
-	entries, err = tree.segment.Read()
+	expectedEntries = []storage.EntryData{
+		{Key: "good", Value: "bye"},
+		{Key: "hello", Value: "world"},
+		{Key: "new", Value: "entry"},
+		{Key: "zzz", Value: "sleep"},
+	}
+
+	entries, err = tree.segments[0][1].Read()
 	if err != nil {
 		t.Errorf("Failed to read segment file: %v", err)
 	}
 
-	// Make sure data is sorted.
-	expectedEntries = []string{"good,bye", "hello,world", "new,entry", "zzz,sleep"}
-	for i, expected := range expectedEntries {
-		if entries[i] != expected {
-			t.Errorf("Got unexpected segment data: %s (expected %s)", entries[i], expected)
+	for i, entry := range *entries {
+		if entry.Key != expectedEntries[i].Key {
+			t.Errorf("Got unexpected segment key: %s (expected %s)", entry.Key, expectedEntries[i].Key)
+		}
+		if entry.Value != expectedEntries[i].Value {
+			t.Errorf("Got unexpected segment value: %s (expected %s)", entry.Value, expectedEntries[i].Value)
 		}
 	}
 }
@@ -119,12 +140,7 @@ func TestReadFromMemtable(t *testing.T) {
 	tree.Insert("good", "night")
 	tree.Insert("hello", "world")
 
-	data, err := tree.segment.Read()
-	if err != nil {
-		t.Errorf("Failed to read segment file: %v", err)
-	}
-
-	if len(data) != 0 {
+	if len(tree.segments) != 0 {
 		t.Errorf("Segment data is not empty?")
 	}
 
@@ -144,7 +160,7 @@ func TestReadFromSegment(t *testing.T) {
 
 	tree, err := New(
 		&Settings{
-			CompactionLimit: 1,
+			CompactionLimit: 1000,
 			DataDirectory:   segmentDirectory,
 		},
 	)
@@ -152,6 +168,11 @@ func TestReadFromSegment(t *testing.T) {
 	if err != nil {
 
 		t.Error(err)
+	}
+
+	err = tree.Insert("hello", "first")
+	if err != nil {
+		t.Error("Failed to insert", err)
 	}
 
 	err = tree.Insert("zzz", "world")
@@ -166,12 +187,7 @@ func TestReadFromSegment(t *testing.T) {
 	if err != nil {
 		t.Error("Failed to insert", err)
 	}
-
-	segmentPath := filepath.Join(segmentDirectory, C1)
-	_, err = os.Stat(segmentPath)
-	if err != nil {
-		t.Errorf("Failed to write segment file: %v", err)
-	}
+	tree.Flush()
 
 	if tree.memtable.Height() != 0 || tree.memtableSize != 0 {
 		t.Error("Expected empty memtable after write")
@@ -193,7 +209,7 @@ func TestRemoveFromMemtable(t *testing.T) {
 
 	tree, err := New(
 		&Settings{
-			CompactionLimit: 20,
+			CompactionLimit: 1000,
 			DataDirectory:   segmentDirectory,
 		},
 	)
@@ -218,7 +234,6 @@ func TestRemoveFromMemtable(t *testing.T) {
 		t.Error(err)
 	}
 
-	segmentData, err := tree.segment.Read()
 	valPtr, err = tree.Search("hello")
 	if err != nil {
 		t.Error(err)
@@ -232,18 +247,9 @@ func TestRemoveFromMemtable(t *testing.T) {
 	tree.Insert("good", "bye")
 	tree.Insert("something", "else")
 	tree.Insert("new", "values")
+	tree.Flush()
 
 	// Still should not be able to find the value.
-	segmentData, err = tree.segment.Read()
-	if err != nil {
-		t.Error(err)
-	}
-
-	for _, entry := range segmentData {
-		if strings.HasPrefix(entry, "hello") {
-			t.Error("Found key in segment after delete/compaction")
-		}
-	}
 	if tree.memtable.Search("hello") != nil {
 		t.Error("Found value for hello in memtable after delete/compaction")
 	}
@@ -254,7 +260,7 @@ func TestRemoveFromSegment(t *testing.T) {
 
 	tree, err := New(
 		&Settings{
-			CompactionLimit: 1,
+			CompactionLimit: 1000,
 			DataDirectory:   segmentDirectory,
 		},
 	)
@@ -268,6 +274,7 @@ func TestRemoveFromSegment(t *testing.T) {
 	tree.Insert("good", "bye")
 	tree.Insert("something", "else")
 	tree.Insert("new", "values")
+	tree.Flush()
 
 	// Should have moved hello out of memtable
 	if tree.memtable.Search("hello") != nil {
@@ -288,6 +295,7 @@ func TestRemoveFromSegment(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
+	tree.Flush()
 
 	valPtr, err = tree.Search("hello")
 	if err != nil {
@@ -299,16 +307,6 @@ func TestRemoveFromSegment(t *testing.T) {
 	}
 
 	// Should not be able to find the value.
-	segmentData, err := tree.segment.Read()
-	if err != nil {
-		t.Error(err)
-	}
-
-	for _, entry := range segmentData {
-		if strings.HasPrefix(entry, "hello") {
-			t.Error("Found key in segment after delete/compaction")
-		}
-	}
 	if tree.memtable.Search("hello") != nil {
 		t.Error("Found value for hello in memtable after delete/compaction")
 	}

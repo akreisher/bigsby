@@ -123,15 +123,15 @@ func New(settings *Settings) (*LSMTree, error) {
 		sort.Slice(files, func(i, j int) bool {
 			iInfo, err := files[i].Info()
 			if err != nil {
-				return false
+				return true
 			}
 
 			jInfo, err := files[j].Info()
 			if err != nil {
-				return true
+				return false
 			}
 
-			return iInfo.ModTime().After(jInfo.ModTime())
+			return iInfo.ModTime().Before(jInfo.ModTime())
 		})
 
 		segments = append(segments, make([]sstable.Table, 0))
@@ -174,8 +174,8 @@ func (t *LSMTree) Insert(key KeyType, value ValueType) error {
 
 func (t *LSMTree) searchSegments(key KeyType) (*ValueType, error) {
 	for _, level := range t.segments {
-		for _, segment := range level {
-			valuePtr, err := segment.Search(key)
+		for i := len(level) - 1; i >= 0; i-- {
+			valuePtr, err := level[i].Search(key)
 			if err != nil {
 				return nil, err
 			}
@@ -189,15 +189,19 @@ func (t *LSMTree) searchSegments(key KeyType) (*ValueType, error) {
 }
 
 func (t *LSMTree) Search(key KeyType) (*ValueType, error) {
+	var err error
 	value := t.memtable.Search(key)
-	if value != nil {
-		if *value == storage.Tombstone {
-			return nil, nil
+	if value == nil {
+		value, err = t.searchSegments(key)
+		if err != nil {
+			return nil, err
 		}
-
-		return value, nil
 	}
-	return t.searchSegments(key)
+
+	if value != nil && *value == storage.Tombstone {
+		return nil, nil
+	}
+	return value, nil
 }
 
 func (t *LSMTree) Remove(key KeyType) error {
