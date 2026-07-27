@@ -73,12 +73,26 @@ func printObject(db *lsm.LSMTree, out io.Writer, args ...string) error {
 	case "memtable", "m":
 		db.PrintMemtable(out)
 	case "segment", "s":
+		if len(args) > 1 {
+			db.PrintSegment(out, args[1])
+			return nil
+		}
 		db.PrintSegments(out)
-
 	default:
 		return fmt.Errorf("Don't know how to print %s.", obj)
 	}
 	return nil
+}
+
+func help(out io.Writer) {
+	io.WriteString(out, "Commands:\n")
+	io.WriteString(out, "  (i)nsert [key] [value]\n")
+	io.WriteString(out, "  (s)earch [key]\n")
+	io.WriteString(out, "  (r)emove [key]\n")
+	io.WriteString(out, "  (p)rint (m)emtable|(s)egment [segment]\n")
+	io.WriteString(out, "  (f)lush\n")
+	io.WriteString(out, "  (h)elp\n")
+	io.WriteString(out, "  (q)uit\n")
 }
 
 func Start(in io.Reader, out io.Writer) {
@@ -124,6 +138,8 @@ func Start(in io.Reader, out io.Writer) {
 			err = printObject(db, out, args...)
 		case "flush", "f":
 			err = flush(db, out)
+		case "help", "h":
+			help(out)
 		case "quit", "q":
 			running = false
 		default:

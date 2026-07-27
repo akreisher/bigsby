@@ -6,19 +6,30 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
+	"math"
 	"os"
 )
 
+const segmentCookie = "BIGSBYSEGMENT"
+
+type indexEntry struct {
+	Key      string
+	Position int
+}
+
 type Table struct {
-	FilePath string
-	// index  map[string, int]
+	FilePath       string
+	index          []indexEntry
 	filter         bloom.Filter
 	dataStartIndex int
 }
 
 const DataFileName = "segment_table"
-const segmentCookie = "BIGSBYSEGMENT"
+
+// TODO: Non-ascii leading char to avoid reading file as text
 const segmentFileFormat = 1
+const sparsityFactor = 0.01
 
 // SSTable Requirements:
 // - Immutable
@@ -28,35 +39,103 @@ const segmentFileFormat = 1
 // - Can create new segment from memtable
 // - Can merge two segments together
 
+func writeHeader(f *os.File) (int, error) {
+	// Write bigsby segment cookie
+	// cookie + version
+	header := make([]byte, len(segmentCookie)+2)
+	copy(header, segmentCookie)
+	binary.BigEndian.PutUint16(header[len(segmentCookie):], segmentFileFormat)
+	return f.Write(header)
+}
+
+func writeBloomFilter(f *os.File, filter bloom.Filter) (int, error) {
+	buf := make([]byte, len(filter.Buf)+4)
+	binary.BigEndian.PutUint32(buf, uint32(len(filter.Buf)))
+	copy(buf[4:], filter.Buf[:])
+	return f.Write(buf)
+}
+
+func writeIndex(f *os.File, index []indexEntry) (int, error) {
+	total := 0
+
+	// Write index size first.
+	numEntries := make([]byte, 4)
+	binary.BigEndian.PutUint32(numEntries, uint32(len(index)))
+	f.Write(numEntries)
+
+	// Write each entry.
+	for _, entry := range index {
+		// Key length.
+		buf := make([]byte, 4)
+		binary.BigEndian.PutUint32(buf, uint32(len(entry.Key)))
+		n, err := f.Write(buf)
+		if err != nil {
+			return 0, err
+		}
+		total += n
+
+		// Key.
+		n, err = f.WriteString(entry.Key)
+		if err != nil {
+			return 0, err
+		}
+		total += n
+
+		// Position.
+		binary.BigEndian.PutUint32(buf, uint32(entry.Position))
+		n, err = f.Write(buf)
+		if err != nil {
+			return 0, err
+		}
+		total += n
+	}
+	return total, nil
+}
+
 func Create(filePath string, data []storage.EntryData) (*Table, error) {
 	f, err := os.Create(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("Could not create segment file: %w", err)
 	}
 
-	filter := bloom.Filter{}
-	for _, entry := range data {
-		filter.Insert(entry.Key)
+	position := 0
+
+	n, err := writeHeader(f)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to write header: %w", err)
 	}
 
-	// Write bigsby segment cookie
-	// cookie + version + bloom filter len + bloom filter data
-	headerLen := len(segmentCookie) + 2 + 4 + len(filter.Buf)
-	header := make([]byte, headerLen)
-	idx := 0
+	position += n
 
-	copy(header[idx:], segmentCookie)
-	idx += len(segmentCookie)
-	binary.BigEndian.PutUint16(header[idx:], segmentFileFormat)
-	idx += 2
-	binary.BigEndian.PutUint32(header[idx:], uint32(len(filter.Buf)))
-	idx += 4
-	copy(header[idx:], filter.Buf[:])
-	idx += len(filter.Buf)
+	// Create bloom filter and index.
+	filter := bloom.Filter{}
+	indexLimit := int(math.Floor(sparsityFactor * float64(len(data))))
+	index := make([]indexEntry, 1/sparsityFactor)
+	seekPos := 0
+	for i, entry := range data {
+		filter.Insert(entry.Key)
+		if indexLimit != 0 && i%indexLimit == 0 {
+			index = append(index, indexEntry{
+				Position: seekPos,
+			})
+		}
+		seekPos += 8 + len(entry.Key) + len(entry.Value)
+	}
 
-	f.Write(header)
+	// Write bloom filter to file.
+	n, err = writeBloomFilter(f, filter)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to write bloom filter: %w", err)
+	}
+	position += n
 
-	// TODO: Write index to disk for loading.
+	// Write index to file.
+	n, err = writeIndex(f, index)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to write index: %w", err)
+	}
+	position += n
+
 	for _, entry := range data {
 		_, err := f.Write(storage.EncodeLogEntry(entry))
 		if err != nil {
@@ -67,10 +146,140 @@ func Create(filePath string, data []storage.EntryData) (*Table, error) {
 	return &Table{
 		FilePath:       filePath,
 		filter:         filter,
-		dataStartIndex: headerLen,
+		dataStartIndex: position,
+		index:          index,
 	}, nil
 }
 
+func readExactly(f *os.File, n int) ([]byte, error) {
+	buf := make([]byte, n)
+	numRead, err := f.Read(buf)
+	if err != nil {
+		return nil, err
+	}
+	if numRead != n {
+		return nil, fmt.Errorf("Failed to exactly %d bytes, (read %d instead)", n, numRead)
+	}
+	return buf, nil
+}
+
+func readHeader(f *os.File) (int, error) {
+	res := 0
+
+	// Read file cookie.
+	cookie, err := readExactly(f, len(segmentCookie))
+	if err != nil {
+		return 0, fmt.Errorf("Failed to read segment file: %w", err)
+	}
+	if !bytes.Equal(cookie, []byte(segmentCookie)) {
+		return 0, fmt.Errorf("Failed to read cookie in segment file")
+	}
+	res += len(segmentCookie)
+
+	// Read file version.
+	versionBuf, err := readExactly(f, 2)
+	if err != nil {
+		return 0, fmt.Errorf("Failed to read segment file: %w", err)
+	}
+	res += 2
+	version := binary.BigEndian.Uint16(versionBuf)
+	if version != segmentFileFormat {
+		return 0, fmt.Errorf("Could not read segment file with version %d", version)
+	}
+	return res, nil
+}
+
+func readFilter(f *os.File) (*bloom.Filter, int, error) {
+	res := 0
+	filterLenBuf, err := readExactly(f, 4)
+	if err != nil {
+		return nil, 0, fmt.Errorf("Failed to read segment file: %w", err)
+	}
+	res += 4
+	filterLen := int(binary.BigEndian.Uint32(filterLenBuf))
+	if filterLen != bloom.Size {
+		return nil, 0, fmt.Errorf("Non-%d filter size is not supported", bloom.Size)
+	}
+
+	filterBuf, err := readExactly(f, filterLen)
+	if err != nil {
+		return nil, 0, fmt.Errorf("Failed to read segment file: %w", err)
+	}
+	res += filterLen
+
+	return &bloom.Filter{
+		Buf: [bloom.Size]byte(filterBuf),
+	}, res, nil
+}
+
+func readIndexEntry(f *os.File) (*indexEntry, int, error) {
+	res := 0
+
+	// Key length.
+	keyLenBuf := make([]byte, 4)
+	n, err := f.Read(keyLenBuf)
+	if err != nil {
+		return nil, 0, fmt.Errorf("Failed to read segment file: %w", err)
+	}
+	if n != 4 {
+		return nil, 0, fmt.Errorf("Failed to read index entry len in segment file")
+	}
+	res += n
+	keyLen := binary.BigEndian.Uint32(keyLenBuf)
+
+	// Key.
+	entry := make([]byte, keyLen)
+	n, err = f.Read(entry)
+	if err != nil {
+		return nil, 0, fmt.Errorf("Failed to read segment file: %w", err)
+	}
+	if n != int(keyLen) {
+		return nil, 0, fmt.Errorf("Failed to read index entry key in segment file")
+	}
+	res += n
+
+	// Position.
+	posBuf := make([]byte, 4)
+	n, err = f.Read(posBuf)
+	if err != nil {
+		return nil, 0, fmt.Errorf("Failed to read segment file: %w", err)
+	}
+	if n != 4 {
+		return nil, 0, fmt.Errorf("Failed to read index entry position in segment file")
+	}
+	res += n
+
+	return &indexEntry{
+		Key:      string(entry),
+		Position: int(binary.BigEndian.Uint32(posBuf)),
+	}, n, nil
+}
+
+func readIndex(f *os.File) ([]indexEntry, int, error) {
+	res := 0
+
+	numEntriesBuf, err := readExactly(f, 4)
+	if err != nil {
+		return nil, 0, fmt.Errorf("Failed to read segment file: %w", err)
+	}
+	res += 4
+
+	numEntries := binary.BigEndian.Uint32(numEntriesBuf)
+	index := make([]indexEntry, numEntries)
+
+	for range numEntries {
+		entry, n, err := readIndexEntry(f)
+		if err != nil {
+			return nil, 0, fmt.Errorf("Failed to read index entry: %w", err)
+		}
+		index = append(index, *entry)
+		res += n
+	}
+
+	return index, res, nil
+}
+
+// Load a SSTable from a file.
 func Load(filePath string) (*Table, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
@@ -78,60 +287,28 @@ func Load(filePath string) (*Table, error) {
 	}
 
 	dataStartIndex := 0
-	cookie := make([]byte, len(segmentCookie))
-	n, err := f.Read(cookie)
+	n, err := readHeader(f)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to read segment file: %w", err)
-	}
-	if n != len(segmentCookie) || !bytes.Equal(cookie, []byte(segmentCookie)) {
-		return nil, fmt.Errorf("Failed to read cookie in segment file")
+		return nil, fmt.Errorf("Failed to read segment header: %w", err)
 	}
 	dataStartIndex += n
 
-	versionBuf := make([]byte, 2)
-	n, err = f.Read(versionBuf)
+	filter, n, err := readFilter(f)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to read segment file: %w", err)
-	}
-	if n != 2 {
-		return nil, fmt.Errorf("Failed to read version in segment file")
-	}
-	dataStartIndex += n
-	version := binary.BigEndian.Uint16(versionBuf)
-	if version != segmentFileFormat {
-		return nil, fmt.Errorf("Could not read segment file with version %d", version)
-	}
-
-	filterLenBuf := make([]byte, 4)
-	n, err = f.Read(filterLenBuf)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to read segment file: %w", err)
-	}
-	if n != 4 {
-		return nil, fmt.Errorf("Failed to read filter length in segment file")
-	}
-	dataStartIndex += n
-	filterLen := binary.BigEndian.Uint32(filterLenBuf)
-	if filterLen != bloom.Size {
-		return nil, fmt.Errorf("Non-%d filter size is not supported", bloom.Size)
-	}
-
-	filterBuf := make([]byte, filterLen)
-	n, err = f.Read(filterBuf)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to read segment file: %w", err)
-	}
-	if n != len(filterBuf) {
-		return nil, fmt.Errorf("Failed to read filter in segment file")
+		return nil, fmt.Errorf("Failed to read segment filter: %w", err)
 	}
 	dataStartIndex += n
 
-	// TODO: Read index from disk.
+	index, n, err := readIndex(f)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to read segment index: %w", err)
+	}
+	dataStartIndex += n
+
 	return &Table{
-		FilePath: filePath,
-		filter: bloom.Filter{
-			Buf: [bloom.Size]byte(filterBuf),
-		},
+		FilePath:       filePath,
+		filter:         *filter,
+		index:          index,
 		dataStartIndex: dataStartIndex,
 	}, nil
 }
@@ -231,4 +408,40 @@ func (t *Table) Read() (*[]storage.EntryData, error) {
 		entries = append(entries, *entry)
 	}
 	return &entries, nil
+}
+
+func (t *Table) Print(out io.Writer) error {
+	data, err := t.Read()
+	if err != nil {
+		return err
+	}
+
+	_, err = fmt.Fprintf(out, "Segment path: %s\n", t.FilePath)
+	if err != nil {
+		return err
+	}
+
+	_, err = io.WriteString(out, "Index:")
+	for _, entry := range t.index {
+		if entry.Position == 0 {
+			continue
+		}
+		_, err = fmt.Fprintf(out, "  [%s]: %d\n", entry.Key, entry.Position)
+		if err != nil {
+			return err
+		}
+	}
+	_, err = fmt.Fprint(out, "Table:\n\n")
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "%v\n", data)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(out, "")
+	if err != nil {
+		return err
+	}
+	return nil
 }

@@ -1,1 +1,12 @@
 * BIGSBY
+
+A LSM-Tree database implemented in Go.
+
+** LSM Trees
+
+
+LSM (Log-Structured Merge) Trees are data structures used for key-values stores requiring high insert volume. It makes use of two seperate internal data structures:
+
+1. Memtable: Keeps the latest insertions in a tree-like data structure in RAM. Provides quick inserts and reads for recently inserted data. A WAL (Write-Ahead Log) is used to recreate the memtable on crashes.
+2. SSTables: A series of leveled SSTables (Sorted String Tables) provide persistent storage in sorted chunks. Each SSTable segment has a bloom filter and index for quick lookup. Segments are compacted once they reach size thresholds.
+

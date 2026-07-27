@@ -101,6 +101,10 @@ func (t *LSMTree) Flush() error {
 	return nil
 }
 
+// func (t *LSMTree) runCompaction() {
+
+// }
+
 func New(settings *Settings) (*LSMTree, error) {
 	segmentDirectory := getSegmentDirectory(settings.DataDirectory)
 
@@ -216,20 +220,25 @@ func (t *LSMTree) PrintMemtable(out io.Writer) {
 	io.WriteString(out, "\n")
 }
 
+func (t *LSMTree) PrintSegment(out io.Writer, segmentName string) {
+	for _, segments := range t.segments {
+		for _, segment := range segments {
+			base, _ := strings.CutSuffix(filepath.Base(segment.FilePath), ".segment")
+			if base == segmentName {
+				segment.Print(out)
+				return
+			}
+		}
+	}
+	fmt.Fprintf(out, "Could not find segment: %s\n", segmentName)
+}
+
 func (t *LSMTree) PrintSegments(out io.Writer) {
 	for level, segments := range t.segments {
 		io.WriteString(out, fmt.Sprintf("Level %d:\n", level))
 		for _, segment := range segments {
-			data, err := segment.Read()
-			if err != nil {
-				panic(err)
-			}
-
-			io.WriteString(out, fmt.Sprintf("Segment path: %s\n", segment.FilePath))
-			io.WriteString(out, "Table:\n\n")
-			io.WriteString(out, fmt.Sprintf("%v\n", data))
-			io.WriteString(out, "\n")
-
+			base, _ := strings.CutSuffix(filepath.Base(segment.FilePath), ".segment")
+			fmt.Fprintln(out, "\t", base)
 		}
 	}
 }
