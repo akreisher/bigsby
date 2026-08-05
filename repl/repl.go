@@ -21,7 +21,7 @@ func insert(db *lsm.LSMTree, out io.Writer, args ...string) error {
 	if err != nil {
 		return err
 	}
-	io.WriteString(out, fmt.Sprintf("Inserted [%s, %s]\n", key, value))
+	io.WriteString(out, fmt.Sprintf("Inserted (%s, %s)\n", key, value))
 	return nil
 }
 
@@ -110,7 +110,6 @@ func Start(in io.Reader, out io.Writer) {
 	if err != nil {
 		panic(fmt.Sprintf("Could not create db: %v", err))
 	}
-	defer db.Flush()
 
 	io.WriteString(out, "Running BigsbyDB\n")
 	running := true

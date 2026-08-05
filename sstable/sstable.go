@@ -98,6 +98,8 @@ func Create(filePath string, data []storage.EntryData) (*Table, error) {
 		return nil, fmt.Errorf("Could not create segment file: %w", err)
 	}
 
+	defer f.Close()
+
 	position := 0
 
 	n, err := writeHeader(f)
@@ -285,6 +287,8 @@ func Load(filePath string) (*Table, error) {
 	if err != nil {
 		return nil, fmt.Errorf("Cannot open segment file: %w", err)
 	}
+
+	defer f.Close()
 
 	dataStartIndex := 0
 	n, err := readHeader(f)

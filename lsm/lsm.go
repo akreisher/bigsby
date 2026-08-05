@@ -4,6 +4,7 @@ import (
 	"bigsby/redblack"
 	"bigsby/sstable"
 	"bigsby/storage"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -20,7 +21,7 @@ type Memtable = redblack.Tree[KeyType, ValueType]
 type Node = redblack.Node[KeyType, ValueType]
 
 type LSMTree struct {
-	memtable     Memtable
+	memtable     *Memtable
 	levels       [][]sstable.Table
 	memtableSize int
 	settings     *Settings
@@ -38,6 +39,57 @@ const segmentSuffix = ".segment"
 
 func getSegmentDirectory(dataDirectory string) string {
 	return filepath.Join(dataDirectory, "segments")
+}
+
+func getWalPath(dataDirectory string) string {
+	return filepath.Join(dataDirectory, "wal")
+}
+
+func readWal(filePath string) (*Memtable, error) {
+	memtable := Memtable{}
+
+	if _, err := os.Stat(filePath); errors.Is(err, os.ErrNotExist) {
+		return &memtable, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("Could not open wal: %w", err)
+	}
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, err
+	}
+
+	ptr := 0
+	for ptr < len(data) {
+		entry, read, err := storage.DecodeLogEntry(data[ptr:])
+		if err != nil {
+			return nil, fmt.Errorf("Could not read wal: %w", err)
+		}
+		ptr += read
+		memtable.Insert(entry.Key, entry.Value)
+	}
+
+	return &memtable, nil
+}
+
+func writeToWal(filePath string, entry storage.EntryData) error {
+	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY, 0660)
+	if err != nil {
+		return fmt.Errorf("Error opening WAL file: %w", err)
+	}
+
+	defer f.Close()
+
+	_, err = f.Write(storage.EncodeLogEntry(entry))
+	if err != nil {
+		return fmt.Errorf("Error writing to WAL file: %w", err)
+	}
+
+	err = f.Sync()
+	if err != nil {
+		return fmt.Errorf("Error flushing WAL file: %w", err)
+	}
+	return nil
 }
 
 func (t *LSMTree) generateNewSegmentPath(level int) (*string, error) {
@@ -96,14 +148,16 @@ func (t *LSMTree) Flush() error {
 	// Reset memtable.
 	// TODO: Make memtable immutable while writing segment
 	// and make a new one for incoming writes.
-	t.memtable = Memtable{}
+	t.memtable = &Memtable{}
 	t.memtableSize = 0
+
+	err = os.RemoveAll(getWalPath(t.settings.DataDirectory))
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
-
-// func (t *LSMTree) runCompaction() {
-
-// }
 
 func New(settings *Settings) (*LSMTree, error) {
 	segmentDirectory := getSegmentDirectory(settings.DataDirectory)
@@ -111,6 +165,11 @@ func New(settings *Settings) (*LSMTree, error) {
 	err := os.MkdirAll(segmentDirectory, os.ModePerm)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to make segment dir: %w", err)
+	}
+
+	memtable, err := readWal(getWalPath(settings.DataDirectory))
+	if err != nil {
+		return nil, err
 	}
 
 	segments := make([][]sstable.Table, 0)
@@ -157,13 +216,22 @@ func New(settings *Settings) (*LSMTree, error) {
 	}
 
 	return &LSMTree{
+		memtable: memtable,
 		settings: settings,
 		segments: segments,
 	}, nil
 }
 
 func (t *LSMTree) Insert(key KeyType, value ValueType) error {
-	// TODO: WAL before inserting to memtable.
+
+	err := writeToWal(getWalPath(t.settings.DataDirectory), storage.EntryData{
+		Key:   key,
+		Value: value,
+	})
+	if err != nil {
+		return err
+	}
+
 	t.memtable.Insert(key, value)
 	t.memtableSize += len(key) + len(value)
 
