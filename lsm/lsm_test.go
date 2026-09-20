@@ -2,10 +2,13 @@ package lsm
 
 import (
 	"bigsby/storage"
+	"errors"
+	"os"
 	"testing"
 )
 
-func TestWriteSegment(t *testing.T) {
+// Test flushing the memtable.
+func TestFlush(t *testing.T) {
 
 	segmentDirectory := t.TempDir()
 
@@ -15,31 +18,37 @@ func TestWriteSegment(t *testing.T) {
 			DataDirectory:   segmentDirectory,
 		},
 	)
-
 	if err != nil {
-
 		t.Error(err)
 	}
 
-	tree.Insert("zzz", "world")
-	tree.Insert("good", "world")
-	tree.Insert("hello", "world")
-	tree.Flush()
 	expectedEntries := []storage.EntryData{
 		{Key: "good", Value: "world"},
 		{Key: "hello", Value: "world"},
 		{Key: "zzz", Value: "world"},
 	}
+	for _, entry := range expectedEntries {
+		tree.Insert(entry.Key, entry.Value)
+	}
+	tree.Flush()
 
+	// Memtable should now be empty.
 	if tree.memtable.Height() != 0 || tree.memtableSize != 0 {
 		t.Error("Expected empty memtable after write")
 	}
 
+	// WAL should be cleared.
+	if _, err := os.Stat(getWalPath(tree.settings.DataDirectory)); err == nil {
+		t.Error("WAL still exists after flush.")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Error(err)
+	}
+
+	// Segment 0 should exist and contain the newly flushed data.
 	entries, err := tree.segments[0][0].Read()
 	if err != nil {
 		t.Errorf("Failed to read segment file: %v", err)
 	}
-
 	for i, entry := range *entries {
 		if entry.Key != expectedEntries[i].Key {
 			t.Errorf("Got unexpected segment key: %s (expected %s)", entry.Key, expectedEntries[i].Key)
@@ -48,6 +57,18 @@ func TestWriteSegment(t *testing.T) {
 			t.Errorf("Got unexpected segment value: %s (expected %s)", entry.Value, expectedEntries[i].Value)
 		}
 	}
+
+	// Make sure we can still read entries from the tree after flush.
+	for _, entry := range expectedEntries {
+		val, err := tree.Search(entry.Key)
+		if err != nil {
+			t.Error(err)
+		}
+		if *val != entry.Value {
+			t.Errorf("Got bad value (expected %s, got %s)", entry.Value, *val)
+		}
+	}
+
 }
 
 func TestMergeInserts(t *testing.T) {
@@ -60,21 +81,19 @@ func TestMergeInserts(t *testing.T) {
 			DataDirectory:   segmentDirectory,
 		},
 	)
-
 	if err != nil {
-
 		t.Error(err)
 	}
 
-	tree.Insert("zzz", "world")
-	tree.Insert("good", "world")
-	tree.Insert("hello", "world")
-	tree.Flush()
 	expectedEntries := []storage.EntryData{
 		{Key: "good", Value: "world"},
 		{Key: "hello", Value: "world"},
 		{Key: "zzz", Value: "world"},
 	}
+	for _, entry := range expectedEntries {
+		tree.Insert(entry.Key, entry.Value)
+	}
+	tree.Flush()
 
 	if tree.memtable.Height() != 0 || tree.memtableSize != 0 {
 		t.Error("Expected empty memtable after write")
@@ -93,18 +112,16 @@ func TestMergeInserts(t *testing.T) {
 		}
 	}
 
-	tree.Insert("zzz", "sleep")
-	tree.Insert("good", "bye")
-	tree.Insert("hello", "world")
-	tree.Insert("new", "entry")
-	tree.Flush()
-
 	expectedEntries = []storage.EntryData{
 		{Key: "good", Value: "bye"},
 		{Key: "hello", Value: "world"},
 		{Key: "new", Value: "entry"},
 		{Key: "zzz", Value: "sleep"},
 	}
+	for _, entry := range expectedEntries {
+		tree.Insert(entry.Key, entry.Value)
+	}
+	tree.Flush()
 
 	entries, err = tree.segments[0][1].Read()
 	if err != nil {
@@ -121,6 +138,7 @@ func TestMergeInserts(t *testing.T) {
 	}
 }
 
+// Write to the memtable, and then test reading back.
 func TestReadFromMemtable(t *testing.T) {
 
 	segmentDirectory := t.TempDir()
@@ -131,78 +149,36 @@ func TestReadFromMemtable(t *testing.T) {
 			DataDirectory:   segmentDirectory,
 		},
 	)
-
 	if err != nil {
 		t.Error(err)
 	}
 
-	tree.Insert("dead", "stick")
-	tree.Insert("good", "night")
-	tree.Insert("hello", "world")
+	expectedEntries := []storage.EntryData{
+		{Key: "foo", Value: "bar"},
+		{Key: "hello", Value: "world"},
+		{Key: "test", Value: "entry"},
+	}
+	for _, entry := range expectedEntries {
+		tree.Insert(entry.Key, entry.Value)
+	}
 
+	// No segments should have been written.
 	if len(tree.segments) != 0 {
 		t.Errorf("Segment data is not empty?")
 	}
 
-	val, err := tree.Search("hello")
-	if err != nil {
-		t.Error(err)
-	}
-
-	if *val != "world" {
-		t.Errorf("Got bad value (expected world, got %s)", *val)
-	}
-}
-
-func TestReadFromSegment(t *testing.T) {
-
-	segmentDirectory := t.TempDir()
-
-	tree, err := New(
-		&Settings{
-			CompactionLimit: 1000,
-			DataDirectory:   segmentDirectory,
-		},
-	)
-
-	if err != nil {
-
-		t.Error(err)
-	}
-
-	err = tree.Insert("hello", "first")
-	if err != nil {
-		t.Error("Failed to insert", err)
-	}
-
-	err = tree.Insert("zzz", "world")
-	if err != nil {
-		t.Error("Failed to insert")
-	}
-	err = tree.Insert("good", "world")
-	if err != nil {
-		t.Error("Failed to insert", err)
-	}
-	err = tree.Insert("hello", "world")
-	if err != nil {
-		t.Error("Failed to insert", err)
-	}
-	tree.Flush()
-
-	if tree.memtable.Height() != 0 || tree.memtableSize != 0 {
-		t.Error("Expected empty memtable after write")
-	}
-
-	val, err := tree.Search("hello")
-	if err != nil {
-		t.Error(err)
-	}
-
-	if *val != "world" {
-		t.Errorf("Got bad value (expected world, got %s)", *val)
+	for _, entry := range expectedEntries {
+		val, err := tree.Search(entry.Key)
+		if err != nil {
+			t.Error(err)
+		}
+		if *val != entry.Value {
+			t.Errorf("Got bad value (expected %s, got %s)", entry.Value, *val)
+		}
 	}
 }
 
+// Test that we can remove an entry that is only in the memtable.
 func TestRemoveFromMemtable(t *testing.T) {
 
 	segmentDirectory := t.TempDir()
@@ -255,6 +231,7 @@ func TestRemoveFromMemtable(t *testing.T) {
 	}
 }
 
+// Test that we can remove an entry that has already been flushed to a segment.
 func TestRemoveFromSegment(t *testing.T) {
 	segmentDirectory := t.TempDir()
 
