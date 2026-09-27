@@ -40,8 +40,9 @@ const sparsityFactor = 0.01
 // - Can merge two segments together
 
 func writeHeader(f *os.File) (int, error) {
-	// Write bigsby segment cookie
-	// cookie + version
+	// Header format:
+	//    cookie string "BIGSBYSEGMENT"
+	//    16-bit version number
 	header := make([]byte, len(segmentCookie)+2)
 	copy(header, segmentCookie)
 	binary.BigEndian.PutUint16(header[len(segmentCookie):], segmentFileFormat)
@@ -62,6 +63,7 @@ func writeIndex(f *os.File, index []indexEntry) (int, error) {
 	numEntries := make([]byte, 4)
 	binary.BigEndian.PutUint32(numEntries, uint32(len(index)))
 	f.Write(numEntries)
+	total += 4
 
 	// Write each entry.
 	for _, entry := range index {
@@ -92,6 +94,7 @@ func writeIndex(f *os.File, index []indexEntry) (int, error) {
 	return total, nil
 }
 
+// Create a new SStable and return it.
 func Create(filePath string, data []storage.EntryData) (*Table, error) {
 	f, err := os.Create(filePath)
 	if err != nil {
@@ -112,7 +115,7 @@ func Create(filePath string, data []storage.EntryData) (*Table, error) {
 	// Create bloom filter and index.
 	filter := bloom.Filter{}
 	indexLimit := int(math.Floor(sparsityFactor * float64(len(data))))
-	index := make([]indexEntry, 1/sparsityFactor)
+	index := make([]indexEntry, indexLimit)
 	seekPos := 0
 	for i, entry := range data {
 		filter.Insert(entry.Key)
@@ -386,7 +389,7 @@ func (t *Table) Search(key string) (*string, error) {
 	for ptr < len(data) {
 		entry, read, err := storage.DecodeLogEntry(data[ptr:])
 		if err != nil {
-			return nil, fmt.Errorf("Could not read segment file: %w", err)
+			return nil, fmt.Errorf("Could not decode segment file entry: %w", err)
 		}
 		if entry.Key == key {
 			return &entry.Value, nil
