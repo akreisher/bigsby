@@ -82,7 +82,7 @@ func readWal(filePath string) (*Memtable, error) {
 }
 
 func writeToWal(filePath string, entry storage.EntryData) error {
-	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY, 0660)
+	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0660)
 	if err != nil {
 		return fmt.Errorf("Error opening WAL file: %w", err)
 	}

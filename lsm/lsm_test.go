@@ -297,24 +297,103 @@ func TestRemoveFromSegment(t *testing.T) {
 }
 
 // Test that the WAL is read at startup and can be rewritten to.
-// func TestRecoverWAL(t *testing.T) {
-// 	segmentDirectory := t.TempDir()
+func TestRecoverWAL(t *testing.T) {
+	segmentDirectory := t.TempDir()
 
-// 	tree, err := New(
-// 		&Settings{
-// 			CompactionLimit: 1000,
-// 			DataDirectory:   segmentDirectory,
-// 		},
-// 	)
+	tree, err := New(
+		&Settings{
+			CompactionLimit: 1000,
+			DataDirectory:   segmentDirectory,
+		},
+	)
+	if err != nil {
 
-// 	if err != nil {
+		t.Error(err)
+	}
 
-// 		t.Error(err)
-// 	}
+	expectedEntries := []storage.EntryData{
+		{Key: "foo", Value: "bar"},
+		{Key: "hello", Value: "world"},
+		{Key: "red", Value: "blue"},
+	}
 
-// 	tree.Insert("hello", "world")
-// 	tree.Insert("good", "bye")
-// 	tree.Insert("something", "else")
-// 	tree.Insert("new", "values")
+	for _, entry := range expectedEntries {
+		tree.Insert(entry.Key, entry.Value)
+	}
 
-// }
+	// Read new tree recovered from WAL.
+	tree, err = New(
+		&Settings{
+			CompactionLimit: 1000,
+			DataDirectory:   segmentDirectory,
+		},
+	)
+	if err != nil {
+
+		t.Error(err)
+	}
+
+	for _, entry := range expectedEntries {
+		found, err := tree.Search(entry.Key)
+		if err != nil {
+			t.Error(err)
+		}
+		if found == nil {
+			t.Errorf("No value found for key %s", entry.Key)
+		}
+
+		if *found != entry.Value {
+			t.Errorf("Expected entry value %s, got %s", *found, entry.Value)
+		}
+	}
+
+	// Test write existing wal.
+	newEntries := []storage.EntryData{
+		{Key: "baz", Value: "qux"},
+		{Key: "true", Value: "false"},
+	}
+
+	for _, entry := range newEntries {
+		tree.Insert(entry.Key, entry.Value)
+	}
+
+	// Read new tree recovered from WAL.
+	tree, err = New(
+		&Settings{
+			CompactionLimit: 1000,
+			DataDirectory:   segmentDirectory,
+		},
+	)
+	if err != nil {
+
+		t.Error(err)
+	}
+
+	for _, entry := range expectedEntries {
+		found, err := tree.Search(entry.Key)
+		if err != nil {
+			t.Error(err)
+		}
+		if found == nil {
+			t.Errorf("No value found for key %s", entry.Key)
+		}
+
+		if *found != entry.Value {
+			t.Errorf("Expected entry value %s, got %s", *found, entry.Value)
+		}
+	}
+
+	for _, entry := range newEntries {
+		found, err := tree.Search(entry.Key)
+		if err != nil {
+			t.Error(err)
+		}
+		if found == nil {
+			t.Errorf("No value found for key %s", entry.Key)
+		}
+
+		if *found != entry.Value {
+			t.Errorf("Expected entry value %s, got %s", *found, entry.Value)
+		}
+	}
+}
