@@ -1,12 +1,12 @@
 package lsm
 
 import (
-	"bigsby/manifest"
-	"bigsby/redblack"
-	"bigsby/sstable"
-	"bigsby/storage"
 	"errors"
 	"fmt"
+	"github.com/akreisher/bigsby/internal/manifest"
+	"github.com/akreisher/bigsby/internal/redblack"
+	"github.com/akreisher/bigsby/internal/sstable"
+	"github.com/akreisher/bigsby/internal/storage"
 	"io"
 	"math/rand"
 	"os"

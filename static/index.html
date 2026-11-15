@@ -1,0 +1,85 @@
+<!doctype html>
+<head>
+  <script
+    src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.10/dist/htmx.min.js"
+    integrity="sha384-H5SrcfygHmAuTDZphMHqBJLc3FhssKjG7w/CeCpFReSfwBWDTKpkzPP8c+cLsK+V"
+    crossorigin="anonymous"
+  ></script>
+  <style>
+    body {
+      background-color: lightyellow;
+    }
+
+    #banner {
+      margin-left: 65px;
+    }
+
+    #search-results {
+      margin-left: 10px;
+    }
+
+    .field {
+      display: flex;
+      align-items: center;
+      margin-bottom: 15px;
+    }
+
+    .field label {
+      width: 50px;
+      text-align: right;
+      margin-right: 15px; 
+    }
+
+    .field input {
+      flex: 1;
+      max-width: 300px;
+    }
+
+    #insert-results {
+      margin-left: 10px;
+    }
+    
+    #insert-bottom {
+      margin-left: 65px;
+      display: flex;
+      
+    }
+  </style>
+</head>
+<html>
+  <body>
+    <pre id="banner">
+____ ___ ____ ____  ______   __
+| __ )_ _/ ___/ ___|| __ ) \ / /
+|  _ \| | |  _\___ \|  _ \\ V / 
+| |_) | | |_| |___) | |_) || |  
+|____/___\____|____/|____/ |_|
+    </pre>
+    <div id="search" class="field">
+      <label for="key">Search:</label>
+      <input
+        type="text"
+        name="key"
+        hx-get="/db"
+        hx-trigger="input"
+        hx-target="#search-results"
+        autocomplete="off"
+      />
+      <div id="search-results"></div>
+    </div>
+    <br/>
+    <form hx-post="/db" hx-target="#insert-results">
+      <div class="field">
+        <label for="key">Key:</label>
+        <input type="text" id="key" name="key" />
+      </div>
+      <div class="field">
+        <label for="value">Value:</label>
+        <input type="text" id="value" name="value" />
+      </div>
+      <div id="insert-bottom">
+        <input id="insert-submit" type="submit" value="Insert" />
+        <div id="insert-results"></div>
+    </form>
+  </body>
+</html>

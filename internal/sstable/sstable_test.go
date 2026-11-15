@@ -1,7 +1,7 @@
 package sstable
 
 import (
-	"bigsby/storage"
+	"github.com/akreisher/bigsby/internal/storage"
 	"os"
 	"path/filepath"
 	"testing"

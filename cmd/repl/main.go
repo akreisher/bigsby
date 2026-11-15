@@ -1,12 +1,14 @@
-package repl
+package main
 
 import (
-	"bigsby/lsm"
 	"bufio"
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"strings"
+
+	"github.com/akreisher/bigsby/internal/lsm"
 )
 
 const PROMPT = ">> "
@@ -95,13 +97,16 @@ func help(out io.Writer) {
 	io.WriteString(out, "  (q)uit\n")
 }
 
-func Start(in io.Reader, out io.Writer) {
-
-	scanner := bufio.NewScanner(in)
+func main() {
 
 	dataDirPtr := flag.String("data-dir", "./.bigsby", "Directory to store data.")
 	compactionLimitPtr := flag.Int("compaction-limit", 1000, "Limit (bytes) for compaction")
 	flag.Parse()
+
+	in := os.Stdin
+	out := os.Stdout
+	scanner := bufio.NewScanner(in)
+	scanner.Err()
 
 	db, err := lsm.New(&lsm.Settings{
 		CompactionLimit: *compactionLimitPtr,
@@ -118,6 +123,12 @@ func Start(in io.Reader, out io.Writer) {
 		scanned := scanner.Scan()
 		if !scanned {
 			return
+		}
+
+		err = scanner.Err()
+		if err != nil {
+			io.WriteString(out, fmt.Sprintf("Scan err: %v\n", err))
+
 		}
 
 		line := scanner.Text()

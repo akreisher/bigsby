@@ -1,11 +1,11 @@
 package sstable
 
 import (
-	"bigsby/bloom"
-	"bigsby/storage"
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"github.com/akreisher/bigsby/internal/bloom"
+	"github.com/akreisher/bigsby/internal/storage"
 	"io"
 	"math"
 	"os"

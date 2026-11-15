@@ -1,8 +1,8 @@
 package lsm
 
 import (
-	"bigsby/storage"
 	"errors"
+	"github.com/akreisher/bigsby/internal/storage"
 	"os"
 	"testing"
 )
