@@ -1,6 +1,7 @@
 package lsm
 
 import (
+	"bigsby/manifest"
 	"bigsby/redblack"
 	"bigsby/sstable"
 	"bigsby/storage"
@@ -10,8 +11,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
-	"sort"
-	"strconv"
+	"slices"
 	"strings"
 )
 
@@ -21,6 +21,7 @@ type Memtable = redblack.Tree[KeyType, ValueType]
 type Node = redblack.Node[KeyType, ValueType]
 
 type LSMTree struct {
+	manifest     *manifest.Manifest
 	memtable     *Memtable
 	levels       [][]sstable.Table
 	memtableSize int
@@ -43,6 +44,14 @@ func getSegmentDirectory(dataDirectory string) string {
 
 func getWalPath(dataDirectory string) string {
 	return filepath.Join(dataDirectory, "wal")
+}
+
+func getManifestPath(dataDirectory string) string {
+	return filepath.Join(dataDirectory, "manifest.json")
+}
+
+func getSegmentPath(dataDirectory string, segmentFile string) string {
+	return filepath.Join(getSegmentDirectory(dataDirectory), segmentFile)
 }
 
 func readWal(filePath string) (*Memtable, error) {
@@ -92,50 +101,44 @@ func writeToWal(filePath string, entry storage.EntryData) error {
 	return nil
 }
 
-func (t *LSMTree) generateNewSegmentPath(level int) (*string, error) {
-	levelDir := filepath.Join(getSegmentDirectory(t.settings.DataDirectory), strconv.Itoa(level))
-	err := os.MkdirAll(levelDir, os.ModePerm)
-	if err != nil {
-		return nil, err
-	}
-
-	for {
-		b := make([]byte, 16)
-		for i := range b {
-			b[i] = segmentNameLetters[rand.Intn(len(segmentNameLetters))]
-		}
-
-		path := filepath.Join(levelDir, string(b)+segmentSuffix)
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			return &path, nil
-		}
-	}
-}
-
 func (t *LSMTree) Flush() error {
-
-	// segmentData, err := t.segment.Read()
-	// if err != nil {
-	// 	return err
-	// }
 
 	entries := make([]storage.EntryData, 0)
 	for k, v := range t.memtable.InOrder() {
-		// While we still have segment values, we need to compare.
 		entries = append(entries, storage.EntryData{
 			Key:   k,
 			Value: v,
 		})
 	}
 
-	path, err := t.generateNewSegmentPath(0)
+	err := os.MkdirAll(getSegmentDirectory(t.settings.DataDirectory), os.ModePerm)
 	if err != nil {
-		return fmt.Errorf("Error getting level 0 segment path: %w", err)
+		return fmt.Errorf("Error creating segment dir: %v", err)
 	}
 
-	segment, err := sstable.Create(*path, entries)
+	var path string
+	for {
+		b := make([]byte, 16)
+		for i := range b {
+			b[i] = segmentNameLetters[rand.Intn(len(segmentNameLetters))]
+		}
+
+		path = getSegmentPath(t.settings.DataDirectory, string(b)+segmentSuffix)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			break
+		} else if err != nil {
+			return fmt.Errorf("Error getting level 1 segment path: %w", err)
+		}
+	}
+
+	segment, err := sstable.Create(path, entries)
 	if err != nil {
-		return err
+		return fmt.Errorf("Error creating segment: %v", err)
+	}
+
+	err = t.manifest.AddSegment(segment.FilePath, 0)
+	if err != nil {
+		return fmt.Errorf("Error adding new segment to manifest: %v", err)
 	}
 
 	if len(t.segments) == 0 {
@@ -151,9 +154,10 @@ func (t *LSMTree) Flush() error {
 	t.memtable = &Memtable{}
 	t.memtableSize = 0
 
+	// Since the memtable is now flushed, we can safely clear the WAL.
 	err = os.RemoveAll(getWalPath(t.settings.DataDirectory))
 	if err != nil {
-		return err
+		return fmt.Errorf("Error removing wal: %v", err)
 	}
 
 	return nil
@@ -172,50 +176,25 @@ func New(settings *Settings) (*LSMTree, error) {
 		return nil, err
 	}
 
+	manifest, err := manifest.LoadManifest(getManifestPath(settings.DataDirectory))
+	if err != nil {
+		return nil, err
+	}
+
 	segments := make([][]sstable.Table, 0)
-	level := 0
-	for {
-		levelDir := filepath.Join(segmentDirectory, strconv.Itoa(level))
-		files, err := os.ReadDir(levelDir)
-		if err != nil {
-			if os.IsNotExist(err) {
-				break
-			}
-		}
-
-		sort.Slice(files, func(i, j int) bool {
-			iInfo, err := files[i].Info()
-			if err != nil {
-				return true
-			}
-
-			jInfo, err := files[j].Info()
-			if err != nil {
-				return false
-			}
-
-			return iInfo.ModTime().Before(jInfo.ModTime())
-		})
-
+	for l, level := range slices.Backward(manifest.Levels) {
 		segments = append(segments, make([]sstable.Table, 0))
-		for _, f := range files {
-			if f.IsDir() {
-				continue
-			}
-			if !strings.HasSuffix(f.Name(), segmentSuffix) {
-				continue
-			}
-
-			segment, err := sstable.Load(filepath.Join(levelDir, f.Name()))
+		for _, segmentFile := range slices.Backward(level.Segments) {
+			segment, err := sstable.Load(getSegmentPath(settings.DataDirectory, segmentFile))
 			if err != nil {
 				return nil, fmt.Errorf("Failed to read segment: %w", err)
 			}
-			segments[level] = append(segments[level], *segment)
+			segments[l] = append(segments[l], *segment)
 		}
-		level++
 	}
 
 	return &LSMTree{
+		manifest: manifest,
 		memtable: memtable,
 		settings: settings,
 		segments: segments,

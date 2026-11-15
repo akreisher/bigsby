@@ -30,11 +30,18 @@ func TestFlush(t *testing.T) {
 	for _, entry := range expectedEntries {
 		tree.Insert(entry.Key, entry.Value)
 	}
-	tree.Flush()
+	err = tree.Flush()
+	if err != nil {
+		t.Errorf("Error flusing: %v", err)
+	}
 
 	// Memtable should now be empty.
-	if tree.memtable.Height() != 0 || tree.memtableSize != 0 {
-		t.Error("Expected empty memtable after write")
+	if tree.memtable.Height() != 0 {
+		tree.PrintMemtable(os.Stdout)
+		t.Errorf("Expected empty memtable after write, height:%d", tree.memtable.Height())
+	}
+	if tree.memtableSize != 0 {
+		t.Errorf("Expected empty memtable after write, size: %d", tree.memtableSize)
 	}
 
 	// WAL should be cleared.
@@ -288,3 +295,26 @@ func TestRemoveFromSegment(t *testing.T) {
 		t.Error("Found value for hello in memtable after delete/compaction")
 	}
 }
+
+// Test that the WAL is read at startup and can be rewritten to.
+// func TestRecoverWAL(t *testing.T) {
+// 	segmentDirectory := t.TempDir()
+
+// 	tree, err := New(
+// 		&Settings{
+// 			CompactionLimit: 1000,
+// 			DataDirectory:   segmentDirectory,
+// 		},
+// 	)
+
+// 	if err != nil {
+
+// 		t.Error(err)
+// 	}
+
+// 	tree.Insert("hello", "world")
+// 	tree.Insert("good", "bye")
+// 	tree.Insert("something", "else")
+// 	tree.Insert("new", "values")
+
+// }
