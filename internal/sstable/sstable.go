@@ -345,7 +345,7 @@ func Merge(newer *Table, older *Table, newFilePath string, last bool) (*Table, e
 
 		if olderIndex >= olderSize {
 			new := newerEntries[newerIndex]
-			if !last || new.Value != storage.Tombstone {
+			if !last || !new.Deleted {
 				merged = append(merged, new)
 			}
 			newerIndex += 1
@@ -358,13 +358,13 @@ func Merge(newer *Table, older *Table, newFilePath string, last bool) (*Table, e
 			merged = append(merged, old)
 			olderIndex += 1
 		} else if new.Key == old.Key {
-			if !last || new.Value != storage.Tombstone {
+			if !last || !new.Deleted {
 				merged = append(merged, new)
 			}
 			olderIndex += 1
 			newerIndex += 1
 		} else {
-			if !last || new.Value != storage.Tombstone {
+			if !last || !new.Deleted {
 				merged = append(merged, new)
 			}
 			newerIndex += 1
@@ -373,7 +373,7 @@ func Merge(newer *Table, older *Table, newFilePath string, last bool) (*Table, e
 	return Create(newFilePath, merged)
 }
 
-func (t *Table) Search(key string) (*string, error) {
+func (t *Table) Search(key string) (*storage.EntryData, error) {
 
 	// If not found in bloom filter, no lookup needed.
 	if !t.filter.Search(key) {
@@ -392,7 +392,7 @@ func (t *Table) Search(key string) (*string, error) {
 			return nil, fmt.Errorf("Could not decode segment file entry: %w", err)
 		}
 		if entry.Key == key {
-			return &entry.Value, nil
+			return entry, nil
 		}
 		ptr += read
 	}

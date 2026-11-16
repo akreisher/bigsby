@@ -27,17 +27,17 @@ func TestCreate(t *testing.T) {
 	}
 
 	for _, entry := range expectedEntries {
-		val, err := table.Search(entry.Key)
+		found, err := table.Search(entry.Key)
 		if err != nil {
 			t.Error(err)
 			continue
 		}
-		if val == nil {
+		if found == nil {
 			t.Errorf("Got no segment value for key %s", entry.Key)
 			continue
 		}
-		if entry.Value != *val {
-			t.Errorf("Got unexpected segment value: %s (expected %s)", *val, entry.Value)
+		if entry.Value != found.Value {
+			t.Errorf("Got unexpected segment value: %s (expected %s)", found.Value, entry.Value)
 			continue
 		}
 	}
@@ -64,17 +64,17 @@ func TestLoad(t *testing.T) {
 	}
 
 	for _, entry := range expectedEntries {
-		val, err := table.Search(entry.Key)
+		found, err := table.Search(entry.Key)
 		if err != nil {
 			t.Error(err)
 			continue
 		}
-		if val == nil {
+		if found == nil {
 			t.Errorf("Got no segment value for key %s", entry.Key)
 			continue
 		}
-		if entry.Value != *val {
-			t.Errorf("Got unexpected segment value: %s (expected %s)", *val, entry.Value)
+		if entry.Value != found.Value {
+			t.Errorf("Got unexpected segment value: %s (expected %s)", found.Value, entry.Value)
 			continue
 		}
 	}

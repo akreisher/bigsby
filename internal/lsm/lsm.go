@@ -16,7 +16,10 @@ import (
 )
 
 type KeyType = string
-type ValueType = string
+type ValueType struct {
+	Value   string
+	Deleted bool
+}
 type Memtable = redblack.Tree[KeyType, ValueType]
 type Node = redblack.Node[KeyType, ValueType]
 
@@ -75,7 +78,7 @@ func readWal(filePath string) (*Memtable, error) {
 			return nil, fmt.Errorf("Could not read wal: %w", err)
 		}
 		ptr += read
-		memtable.Insert(entry.Key, entry.Value)
+		memtable.Insert(entry.Key, ValueType{Value: entry.Value, Deleted: entry.Deleted})
 	}
 
 	return &memtable, nil
@@ -106,8 +109,9 @@ func (t *LSMTree) Flush() error {
 	entries := make([]storage.EntryData, 0)
 	for k, v := range t.memtable.InOrder() {
 		entries = append(entries, storage.EntryData{
-			Key:   k,
-			Value: v,
+			Key:     k,
+			Value:   v.Value,
+			Deleted: v.Deleted,
 		})
 	}
 
@@ -201,18 +205,20 @@ func New(settings *Settings) (*LSMTree, error) {
 	}, nil
 }
 
-func (t *LSMTree) Insert(key KeyType, value ValueType) error {
+func (t *LSMTree) Insert(key KeyType, value string) error {
+	return t.writeEntry(storage.EntryData{Key: key, Value: value})
+}
 
-	err := writeToWal(getWalPath(t.settings.DataDirectory), storage.EntryData{
-		Key:   key,
-		Value: value,
-	})
+func (t *LSMTree) writeEntry(entry storage.EntryData) error {
+	err := writeToWal(getWalPath(t.settings.DataDirectory), entry)
 	if err != nil {
 		return err
 	}
 
-	t.memtable.Insert(key, value)
-	t.memtableSize += len(key) + len(value)
+	t.memtable.Insert(
+		entry.Key, ValueType{Value: entry.Value, Deleted: entry.Deleted},
+	)
+	t.memtableSize += len(entry.Key) + len(entry.Value) + 1
 
 	if t.memtableSize > t.settings.CompactionLimit {
 		err := t.Flush()
@@ -223,7 +229,7 @@ func (t *LSMTree) Insert(key KeyType, value ValueType) error {
 	return nil
 }
 
-func (t *LSMTree) searchSegments(key KeyType) (*ValueType, error) {
+func (t *LSMTree) searchSegments(key KeyType) (*storage.EntryData, error) {
 	for _, level := range t.segments {
 		for i := len(level) - 1; i >= 0; i-- {
 			valuePtr, err := level[i].Search(key)
@@ -239,24 +245,28 @@ func (t *LSMTree) searchSegments(key KeyType) (*ValueType, error) {
 	return nil, nil
 }
 
-func (t *LSMTree) Search(key KeyType) (*ValueType, error) {
-	var err error
+func (t *LSMTree) Search(key KeyType) (*string, error) {
 	value := t.memtable.Search(key)
-	if value == nil {
-		value, err = t.searchSegments(key)
-		if err != nil {
-			return nil, err
+	if value != nil {
+		if value.Deleted {
+			return nil, nil
 		}
+		return &value.Value, nil
 	}
 
-	if value != nil && *value == storage.Tombstone {
+	entry, err := t.searchSegments(key)
+	if err != nil {
+		return nil, err
+	}
+
+	if entry == nil || entry.Deleted {
 		return nil, nil
 	}
-	return value, nil
+	return &entry.Value, nil
 }
 
 func (t *LSMTree) Remove(key KeyType) error {
-	return t.Insert(key, storage.Tombstone)
+	return t.writeEntry(storage.EntryData{Key: key, Deleted: true})
 }
 
 func (t *LSMTree) PrintMemtable(out io.Writer) {

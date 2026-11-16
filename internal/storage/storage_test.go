@@ -8,6 +8,8 @@ func TestEncodeDecode(t *testing.T) {
 		{Key: "foo", Value: "bar"},
 		{Key: "hello", Value: "world"},
 		{Key: "red", Value: "black"},
+		{Key: "blue", Deleted: true},
+		{Key: "bla", Deleted: true},
 	}
 
 	for _, entry := range expectedEntries {
@@ -29,6 +31,9 @@ func TestEncodeDecode(t *testing.T) {
 		}
 		if decoded.Value != entry.Value {
 			t.Errorf("Decoded value: '%s', but expected '%s' ", decoded.Value, entry.Value)
+		}
+		if decoded.Deleted != entry.Deleted {
+			t.Errorf("Decoded deleted flag: '%t', but expected '%t' ", decoded.Deleted, entry.Deleted)
 		}
 	}
 }
