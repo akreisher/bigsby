@@ -76,6 +76,28 @@ func TestFlush(t *testing.T) {
 		}
 	}
 
+	// Ensure a new DB can read the fresh tree.
+	tree, err = New(
+		&Settings{
+			CompactionLimit: 1000,
+			DataDirectory:   segmentDirectory,
+		},
+	)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	for _, entry := range expectedEntries {
+		val, err := tree.Search(entry.Key)
+		if err != nil {
+			t.Error(err)
+		}
+		if *val != entry.Value {
+			t.Errorf("Got bad value (expected %s, got %s)", entry.Value, *val)
+		}
+	}
+
 }
 
 func TestMergeInserts(t *testing.T) {

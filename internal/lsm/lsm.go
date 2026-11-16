@@ -117,13 +117,13 @@ func (t *LSMTree) Flush() error {
 	}
 
 	var path string
+	segmentId := make([]byte, 16)
 	for {
-		b := make([]byte, 16)
-		for i := range b {
-			b[i] = segmentNameLetters[rand.Intn(len(segmentNameLetters))]
+		for i := range segmentId {
+			segmentId[i] = segmentNameLetters[rand.Intn(len(segmentNameLetters))]
 		}
 
-		path = getSegmentPath(t.settings.DataDirectory, string(b)+segmentSuffix)
+		path = getSegmentPath(t.settings.DataDirectory, string(segmentId)+segmentSuffix)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			break
 		} else if err != nil {
@@ -136,7 +136,7 @@ func (t *LSMTree) Flush() error {
 		return fmt.Errorf("Error creating segment: %v", err)
 	}
 
-	err = t.manifest.AddSegment(segment.FilePath, 0)
+	err = t.manifest.AddSegment(string(segmentId), 0)
 	if err != nil {
 		return fmt.Errorf("Error adding new segment to manifest: %v", err)
 	}
@@ -184,8 +184,8 @@ func New(settings *Settings) (*LSMTree, error) {
 	segments := make([][]sstable.Table, 0)
 	for l, level := range slices.Backward(manifest.Levels) {
 		segments = append(segments, make([]sstable.Table, 0))
-		for _, segmentFile := range slices.Backward(level.Segments) {
-			segment, err := sstable.Load(getSegmentPath(settings.DataDirectory, segmentFile))
+		for _, segmentId := range slices.Backward(level.Segments) {
+			segment, err := sstable.Load(getSegmentPath(settings.DataDirectory, segmentId+segmentSuffix))
 			if err != nil {
 				return nil, fmt.Errorf("Failed to read segment: %w", err)
 			}
