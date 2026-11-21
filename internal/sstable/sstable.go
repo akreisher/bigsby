@@ -25,6 +25,7 @@ type Table struct {
 	index          []indexEntry
 	filter         bloom.Filter
 	dataStartIndex int
+	dataEndIndex   int
 }
 
 const DataFileName = "segment_table"
@@ -96,7 +97,17 @@ func writeIndex(f *os.File, index []indexEntry) (int, error) {
 	return total, nil
 }
 
-// Create a new SStable and return it.
+func writeFooter(f *os.File, dataEndIndex int) (int, error) {
+	// Footer format:
+	//    uint64 dataEndIndex
+	//    cookie string "BIGSBYSEGMENT"
+	footer := make([]byte, len(segmentCookie)+8)
+	binary.BigEndian.PutUint64(footer, uint64(dataEndIndex))
+	copy(footer[8:], segmentCookie)
+	return f.Write(footer)
+}
+
+// Create a new SStable from a list of entries.
 func Create(filePath string, data []storage.EntryData) (*Table, error) {
 	f, err := os.Create(filePath)
 	if err != nil {
@@ -121,23 +132,40 @@ func Create(filePath string, data []storage.EntryData) (*Table, error) {
 	indexLimit := int(math.Floor(sparsityFactor * float64(len(data))))
 	index := make([]indexEntry, indexLimit)
 
-	seekPos := 0
+	dataStartIndex := position
 	var lastKey string
 
 	for i, entry := range data {
+
+		// Keys in list must be pre-sorted and unique.
 		if i != 0 && entry.Key <= lastKey {
 			return nil, fmt.Errorf("Unsorted or repeat key: %s (prev %s)", entry.Key, lastKey)
 		}
 		lastKey = entry.Key
 
+		data, err := storage.EncodeLogEntry(entry)
+		if err != nil {
+			return nil, fmt.Errorf("Failed to encode segment data: %w", err)
+		}
+
+		// Write entry to the table file.
+		_, err = f.Write(data)
+		if err != nil {
+			return nil, fmt.Errorf("Failed to write segment data: %w", err)
+		}
+
+		// Add entry to bloom filter.
 		filter.Insert(entry.Key)
+
+		// Check if we are at the index limits.
 		if indexLimit != 0 && i%indexLimit == 0 {
 			index = append(index, indexEntry{
-				Position: seekPos,
+				Position: position,
 			})
 		}
-		seekPos += entry.Size()
+		position += entry.Size()
 	}
+	dataEndIndex := position
 
 	// Write bloom filter to file.
 	n, err = writeBloomFilter(f, filter)
@@ -153,21 +181,17 @@ func Create(filePath string, data []storage.EntryData) (*Table, error) {
 	}
 	position += n
 
-	for _, entry := range data {
-		data, err := storage.EncodeLogEntry(entry)
-		if err != nil {
-			return nil, fmt.Errorf("Failed to encode segment data: %w", err)
-		}
-		_, err = f.Write(data)
-		if err != nil {
-			return nil, fmt.Errorf("Failed to write segment data: %w", err)
-		}
+	n, err = writeFooter(f, dataEndIndex)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to write footer: %w", err)
 	}
+	position += n
 
 	return &Table{
 		FilePath:       filePath,
 		filter:         filter,
-		dataStartIndex: position,
+		dataStartIndex: dataStartIndex,
+		dataEndIndex:   dataEndIndex,
 		index:          index,
 	}, nil
 }
@@ -300,6 +324,31 @@ func readIndex(f *os.File) ([]indexEntry, int, error) {
 	return index, res, nil
 }
 
+func readFooter(f *os.File) (int, int, error) {
+	res := 0
+
+	// Check cookie.
+	_, err := f.Seek(-int64(len(segmentCookie)), io.SeekEnd)
+	cookie, err := readExactly(f, len(segmentCookie))
+	if err != nil {
+		return -1, 0, fmt.Errorf("Failed to read footer: %w", err)
+	}
+	if !bytes.Equal(cookie, []byte(segmentCookie)) {
+		return -1, 0, fmt.Errorf("Failed to read cookie in segment file")
+	}
+	res += len(segmentCookie)
+
+	_, err = f.Seek(-int64(len(segmentCookie))-8, io.SeekEnd)
+	dataEndIndexBuf, err := readExactly(f, 8)
+	if err != nil {
+		return -1, 0, fmt.Errorf("Failed to read segment file: %w", err)
+	}
+	res += 4
+
+	dataEndIndex := binary.BigEndian.Uint64(dataEndIndexBuf)
+	return int(dataEndIndex), res, nil
+}
+
 // Load a SSTable from a file.
 func Load(filePath string) (*Table, error) {
 	f, err := os.Open(filePath)
@@ -316,23 +365,29 @@ func Load(filePath string) (*Table, error) {
 	}
 	dataStartIndex += n
 
+	dataEndIndex, _, err := readFooter(f)
+
+	_, err = f.Seek(int64(dataEndIndex), io.SeekStart)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to seek to data end index pos %d: %w", dataEndIndex, err)
+	}
+
 	filter, n, err := readFilter(f)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to read segment filter: %w", err)
 	}
-	dataStartIndex += n
 
 	index, n, err := readIndex(f)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to read segment index: %w", err)
 	}
-	dataStartIndex += n
 
 	return &Table{
 		FilePath:       filePath,
 		filter:         *filter,
 		index:          index,
 		dataStartIndex: dataStartIndex,
+		dataEndIndex:   dataEndIndex,
 	}, nil
 }
 
@@ -438,7 +493,7 @@ func (t *Table) Read() (*[]storage.EntryData, error) {
 	}
 	ptr := t.dataStartIndex
 	entries := make([]storage.EntryData, 0)
-	for ptr < len(data) {
+	for ptr < t.dataEndIndex {
 		entry, read, err := storage.DecodeLogEntry(data[ptr:])
 		if err != nil {
 			return nil, fmt.Errorf("Could not read segment file: %w", err)
