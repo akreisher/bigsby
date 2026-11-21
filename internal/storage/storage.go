@@ -19,6 +19,10 @@ type EntryData struct {
 	Deleted bool
 }
 
+func (e *EntryData) Size() int {
+	return binary.Size(entryHeader{}) + len(e.Key) + len(e.Value)
+}
+
 func EncodeLogEntry(entry EntryData) ([]byte, error) {
 	hdr := entryHeader{
 		KeyLen:   uint32(len(entry.Key)),

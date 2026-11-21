@@ -114,19 +114,29 @@ func Create(filePath string, data []storage.EntryData) (*Table, error) {
 
 	position += n
 
-	// Create bloom filter and index.
+	// Create bloom filter.
 	filter := bloom.Filter{}
+
+	// Create index.
 	indexLimit := int(math.Floor(sparsityFactor * float64(len(data))))
 	index := make([]indexEntry, indexLimit)
+
 	seekPos := 0
+	var lastKey string
+
 	for i, entry := range data {
+		if i != 0 && entry.Key <= lastKey {
+			return nil, fmt.Errorf("Unsorted or repeat key: %s (prev %s)", entry.Key, lastKey)
+		}
+		lastKey = entry.Key
+
 		filter.Insert(entry.Key)
 		if indexLimit != 0 && i%indexLimit == 0 {
 			index = append(index, indexEntry{
 				Position: seekPos,
 			})
 		}
-		seekPos += 8 + len(entry.Key) + len(entry.Value)
+		seekPos += entry.Size()
 	}
 
 	// Write bloom filter to file.
@@ -327,6 +337,8 @@ func Load(filePath string) (*Table, error) {
 }
 
 func Merge(newer *Table, older *Table, newFilePath string, last bool) (*Table, error) {
+	// TODO: Merge into file, combine bloom, generate index on the fly.
+
 	newerEntriesPtr, err := newer.Read()
 	if err != nil {
 		return nil, err
@@ -418,6 +430,7 @@ func (t *Table) Search(key string) (*storage.EntryData, error) {
 	return nil, nil
 }
 
+// Read all entries in the table.
 func (t *Table) Read() (*[]storage.EntryData, error) {
 	data, err := os.ReadFile(t.FilePath)
 	if err != nil {
