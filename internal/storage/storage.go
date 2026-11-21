@@ -1,9 +1,17 @@
 package storage
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 )
+
+type entryHeader struct {
+	KeyLen   uint32
+	ValueLen uint32
+	Flags    byte
+}
 
 type EntryData struct {
 	Key     string
@@ -11,68 +19,60 @@ type EntryData struct {
 	Deleted bool
 }
 
-func EncodeLogEntry(entry EntryData) []byte {
-	keySize := len(entry.Key)
-	var valSize int = 0
-	if !entry.Deleted {
-		valSize = len(entry.Value)
+func EncodeLogEntry(entry EntryData) ([]byte, error) {
+	hdr := entryHeader{
+		KeyLen:   uint32(len(entry.Key)),
+		ValueLen: uint32(len(entry.Value)),
 	}
-	logSize := keySize + valSize + 8 + 1 // key + val + 2 * uint32_len + flags
-	buf := make([]byte, logSize)
-	binary.BigEndian.PutUint32(buf, uint32(keySize))
-	copy(buf[4:], entry.Key)
+
 	if entry.Deleted {
-		// Mark tombstone.
-		buf[4+keySize] = 1
-	} else {
-		// If not deleted, copy value.
-		binary.BigEndian.PutUint32(buf[4+keySize+1:], uint32(valSize))
-		copy(buf[4+keySize+1+4:], entry.Value)
+		hdr.Flags |= 1
+		hdr.ValueLen = 0
 	}
-	return buf
+
+	var buf bytes.Buffer
+	err := binary.Write(&buf, binary.BigEndian, hdr)
+	if err != nil {
+		return nil, err
+	}
+
+	buf.Write([]byte(entry.Key))
+	if !entry.Deleted {
+		buf.Write([]byte(entry.Value))
+	}
+	return buf.Bytes(), nil
 }
 
-func DecodeLogEntry(data []byte) (*EntryData, int, error) {
+func ReadLogEntry(r io.Reader) (*EntryData, int, error) {
+	var hdr entryHeader
+
 	n := 0
-	// Ready key size
-	bytesToRead := 4
-
-	if len(data) < n+bytesToRead {
-		return nil, 0, fmt.Errorf("Not enough data to read key size")
+	err := binary.Read(r, binary.BigEndian, &hdr)
+	if err != nil {
+		return nil, n, err
 	}
-	keySize := binary.BigEndian.Uint32(data[n:])
+	n += binary.Size(hdr)
+
+	deleted := hdr.Flags&1 == 1
+
+	// Read key.
+	bytesToRead := int(hdr.KeyLen)
+	buf := make([]byte, bytesToRead)
+	_, err = io.ReadFull(r, buf)
+	if err != nil {
+		return nil, n, fmt.Errorf("Failed to read key: %w", err)
+	}
+	key := string(buf)
 	n += bytesToRead
 
-	// Read key
-	bytesToRead = int(keySize)
-	if len(data) < n+bytesToRead {
-		return nil, 0, fmt.Errorf("Not enough data to read key")
+	// Read value.
+	bytesToRead = int(hdr.ValueLen)
+	buf = make([]byte, bytesToRead)
+	_, err = io.ReadFull(r, buf)
+	if err != nil {
+		return nil, n, fmt.Errorf("Failed to read value: %w", err)
 	}
-	key := string(data[n : n+bytesToRead])
-	n += bytesToRead
-
-	// Read tombstone flag.
-	bytesToRead = 1
-	if len(data) < n+bytesToRead {
-		return nil, 0, fmt.Errorf("Not enough data to read flags")
-	}
-	deleted := data[n]&1 == 1
-	n += bytesToRead
-
-	// Read value size.
-	bytesToRead = 4
-	if len(data) < n+bytesToRead {
-		return nil, 0, fmt.Errorf("Not enough data to read value size")
-	}
-	valueSize := binary.BigEndian.Uint32(data[n:])
-	n += bytesToRead
-
-	// Read value
-	bytesToRead = int(valueSize)
-	if len(data) < n+bytesToRead {
-		return nil, 0, fmt.Errorf("Not enough data to read value")
-	}
-	value := string(data[n : n+bytesToRead])
+	value := string(buf)
 	n += bytesToRead
 
 	return &EntryData{
@@ -80,4 +80,8 @@ func DecodeLogEntry(data []byte) (*EntryData, int, error) {
 		Value:   value,
 		Deleted: deleted,
 	}, n, nil
+}
+
+func DecodeLogEntry(data []byte) (*EntryData, int, error) {
+	return ReadLogEntry(bytes.NewReader(data))
 }

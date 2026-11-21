@@ -3,12 +3,14 @@ package sstable
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
-	"github.com/akreisher/bigsby/internal/bloom"
-	"github.com/akreisher/bigsby/internal/storage"
 	"io"
 	"math"
 	"os"
+
+	"github.com/akreisher/bigsby/internal/bloom"
+	"github.com/akreisher/bigsby/internal/storage"
 )
 
 const segmentCookie = "BIGSBYSEGMENT"
@@ -142,7 +144,11 @@ func Create(filePath string, data []storage.EntryData) (*Table, error) {
 	position += n
 
 	for _, entry := range data {
-		_, err := f.Write(storage.EncodeLogEntry(entry))
+		data, err := storage.EncodeLogEntry(entry)
+		if err != nil {
+			return nil, fmt.Errorf("Failed to encode segment data: %w", err)
+		}
+		_, err = f.Write(data)
 		if err != nil {
 			return nil, fmt.Errorf("Failed to write segment data: %w", err)
 		}
@@ -380,21 +386,34 @@ func (t *Table) Search(key string) (*storage.EntryData, error) {
 		return nil, nil
 	}
 
-	// TODO: Start from index location.
-	data, err := os.ReadFile(t.FilePath)
-	if err != nil {
-		return nil, fmt.Errorf("Could not read segment file: %w", err)
+	startPos := t.dataStartIndex
+	for _, entry := range t.index {
+		if entry.Key > key {
+			break
+		}
+		startPos = entry.Position
 	}
-	ptr := t.dataStartIndex
-	for ptr < len(data) {
-		entry, read, err := storage.DecodeLogEntry(data[ptr:])
-		if err != nil {
+
+	f, err := os.Open(t.FilePath)
+	if err != nil {
+		return nil, fmt.Errorf("Could not open segment file: %w", err)
+	}
+	_, err = f.Seek(int64(startPos), io.SeekStart)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to seek to index pos %d: %w", startPos, err)
+	}
+
+	for {
+		entry, _, err := storage.ReadLogEntry(f)
+		if errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
 			return nil, fmt.Errorf("Could not decode segment file entry: %w", err)
 		}
+
 		if entry.Key == key {
 			return entry, nil
 		}
-		ptr += read
 	}
 	return nil, nil
 }

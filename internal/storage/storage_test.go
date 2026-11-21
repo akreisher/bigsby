@@ -13,7 +13,12 @@ func TestEncodeDecode(t *testing.T) {
 	}
 
 	for _, entry := range expectedEntries {
-		data := EncodeLogEntry(entry)
+		data, err := EncodeLogEntry(entry)
+		if err != nil {
+			t.Error(err)
+			continue
+		}
+
 		decoded, n, err := DecodeLogEntry(data)
 		if err != nil {
 			t.Error(err)

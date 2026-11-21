@@ -92,7 +92,12 @@ func writeToWal(filePath string, entry storage.EntryData) error {
 
 	defer f.Close()
 
-	_, err = f.Write(storage.EncodeLogEntry(entry))
+	data, err := storage.EncodeLogEntry(entry)
+	if err != nil {
+		return fmt.Errorf("Failed to encode wal data: %w", err)
+	}
+
+	_, err = f.Write(data)
 	if err != nil {
 		return fmt.Errorf("Error writing to WAL file: %w", err)
 	}
