@@ -102,6 +102,7 @@ func TestMerge(t *testing.T) {
 	segmentFileMerged := filepath.Join(segmentDirectory, "segment3")
 
 	expectedEntries1 := []storage.EntryData{
+		{Key: "foo", Value: "baz"},
 		{Key: "good", Value: "world"},
 		{Key: "hello", Value: "world"},
 		{Key: "zzz", Value: "world"},

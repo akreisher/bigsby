@@ -20,12 +20,18 @@ type indexEntry struct {
 	Position int
 }
 
+type segmentFooter struct {
+	NumEntries   uint64
+	DataEndIndex uint64
+}
+
 type Table struct {
 	FilePath       string
 	index          []indexEntry
 	filter         bloom.Filter
 	dataStartIndex int
 	dataEndIndex   int
+	numEntries     int
 }
 
 const DataFileName = "segment_table"
@@ -97,14 +103,27 @@ func writeIndex(f *os.File, index []indexEntry) (int, error) {
 	return total, nil
 }
 
-func writeFooter(f *os.File, dataEndIndex int) (int, error) {
-	// Footer format:
-	//    uint64 dataEndIndex
-	//    cookie string "BIGSBYSEGMENT"
-	footer := make([]byte, len(segmentCookie)+8)
-	binary.BigEndian.PutUint64(footer, uint64(dataEndIndex))
-	copy(footer[8:], segmentCookie)
-	return f.Write(footer)
+func writeFooter(f *os.File, footer segmentFooter) (int, error) {
+	var buf bytes.Buffer
+
+	total := 0
+	err := binary.Write(&buf, binary.BigEndian, footer)
+	if err != nil {
+		return 0, err
+	}
+	n, err := f.Write(buf.Bytes())
+	if err != nil {
+		return 0, fmt.Errorf("Failed to write footer: %w", err)
+	}
+	total += n
+
+	n, err = f.Write([]byte(segmentCookie))
+	if err != nil {
+		return 0, fmt.Errorf("Failed to write footer: %w", err)
+	}
+	total += n
+
+	return total, nil
 }
 
 // Create a new SStable from a list of entries.
@@ -181,7 +200,10 @@ func Create(filePath string, data []storage.EntryData) (*Table, error) {
 	}
 	position += n
 
-	n, err = writeFooter(f, dataEndIndex)
+	n, err = writeFooter(f, segmentFooter{
+		NumEntries:   uint64(len(data)),
+		DataEndIndex: uint64(dataEndIndex),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("Failed to write footer: %w", err)
 	}
@@ -193,6 +215,7 @@ func Create(filePath string, data []storage.EntryData) (*Table, error) {
 		dataStartIndex: dataStartIndex,
 		dataEndIndex:   dataEndIndex,
 		index:          index,
+		numEntries:     len(data),
 	}, nil
 }
 
@@ -324,29 +347,34 @@ func readIndex(f *os.File) ([]indexEntry, int, error) {
 	return index, res, nil
 }
 
-func readFooter(f *os.File) (int, int, error) {
+func readFooter(f *os.File) (*segmentFooter, int, error) {
 	res := 0
 
 	// Check cookie.
 	_, err := f.Seek(-int64(len(segmentCookie)), io.SeekEnd)
 	cookie, err := readExactly(f, len(segmentCookie))
 	if err != nil {
-		return -1, 0, fmt.Errorf("Failed to read footer: %w", err)
+		return nil, 0, fmt.Errorf("Failed to read footer: %w", err)
 	}
 	if !bytes.Equal(cookie, []byte(segmentCookie)) {
-		return -1, 0, fmt.Errorf("Failed to read cookie in segment file")
+		return nil, 0, fmt.Errorf("Failed to read cookie in segment file")
 	}
 	res += len(segmentCookie)
 
-	_, err = f.Seek(-int64(len(segmentCookie))-8, io.SeekEnd)
-	dataEndIndexBuf, err := readExactly(f, 8)
+	var footer segmentFooter
+	seekPos := -int64(len(segmentCookie)) - int64(binary.Size(footer))
+	_, err = f.Seek(seekPos, io.SeekEnd)
 	if err != nil {
-		return -1, 0, fmt.Errorf("Failed to read segment file: %w", err)
+		return nil, 0, fmt.Errorf("Failed to seek to pos %d: %w", seekPos, err)
 	}
-	res += 4
 
-	dataEndIndex := binary.BigEndian.Uint64(dataEndIndexBuf)
-	return int(dataEndIndex), res, nil
+	err = binary.Read(f, binary.BigEndian, &footer)
+	if err != nil {
+		return nil, res, err
+	}
+	res += binary.Size(footer)
+
+	return &footer, res, nil
 }
 
 // Load a SSTable from a file.
@@ -365,11 +393,11 @@ func Load(filePath string) (*Table, error) {
 	}
 	dataStartIndex += n
 
-	dataEndIndex, _, err := readFooter(f)
+	footer, _, err := readFooter(f)
 
-	_, err = f.Seek(int64(dataEndIndex), io.SeekStart)
+	_, err = f.Seek(int64(footer.DataEndIndex), io.SeekStart)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to seek to data end index pos %d: %w", dataEndIndex, err)
+		return nil, fmt.Errorf("Failed to seek to data end index pos %d: %w", footer.DataEndIndex, err)
 	}
 
 	filter, n, err := readFilter(f)
@@ -387,63 +415,184 @@ func Load(filePath string) (*Table, error) {
 		filter:         *filter,
 		index:          index,
 		dataStartIndex: dataStartIndex,
-		dataEndIndex:   dataEndIndex,
+		dataEndIndex:   int(footer.DataEndIndex),
+		numEntries:     int(footer.NumEntries),
 	}, nil
 }
 
 func Merge(newer *Table, older *Table, newFilePath string, last bool) (*Table, error) {
-	// TODO: Merge into file, combine bloom, generate index on the fly.
-
-	newerEntriesPtr, err := newer.Read()
+	f, err := os.Create(newFilePath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Could not create segment file: %w", err)
 	}
 
-	olderEntriesPtr, err := older.Read()
+	defer f.Close()
+
+	position := 0
+	totalEntries := newer.numEntries + older.numEntries
+
+	n, err := writeHeader(f)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Failed to write header: %w", err)
 	}
 
-	olderEntries, newerEntries := *olderEntriesPtr, *newerEntriesPtr
-	newerSize, olderSize := len(newerEntries), len(olderEntries)
-	newerIndex, olderIndex := 0, 0
-	merged := make([]storage.EntryData, 0, olderSize+newerSize)
+	position += n
 
-	for newerIndex < newerSize || olderIndex < olderSize {
-		if newerIndex >= newerSize {
-			merged = append(merged, olderEntries[olderIndex])
+	// Create bloom filter.
+	filter := bloom.Filter{}
+
+	// Create index.
+	indexLimit := int(math.Floor(sparsityFactor * float64(totalEntries)))
+	index := make([]indexEntry, indexLimit)
+
+	numEntries := 0
+	insertMerged := func(entry storage.EntryData) error {
+
+		// If we are inserting a deleted entry in the last level,
+		// we can safely just skip the data.
+		if entry.Deleted && last {
+			return nil
+		}
+
+		numEntries += 1
+
+		// Add entry to bloom filter.
+		filter.Insert(entry.Key)
+
+		// Check if we are at the index limits.
+		if indexLimit != 0 && numEntries%indexLimit == 0 {
+			index = append(index, indexEntry{
+				Position: position,
+			})
+		}
+
+		data, err := storage.EncodeLogEntry(entry)
+		if err != nil {
+			return fmt.Errorf("Failed to encode segment data: %w", err)
+		}
+
+		// Write entry to the table file.
+		n, err = f.Write(data)
+		if err != nil {
+			return fmt.Errorf("Failed to write segment data: %w", err)
+		}
+		position += n
+
+		return nil
+	}
+
+	var oldEntry *storage.EntryData
+	olderIndex := older.dataStartIndex
+	olderFile, err := os.Open(older.FilePath)
+	if err != nil {
+		return nil, fmt.Errorf("Could not open older segment file: %w", err)
+	}
+	defer olderFile.Close()
+
+	_, err = f.Seek(int64(olderIndex), io.SeekStart)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to seek to index pos %d: %w", olderIndex, err)
+	}
+
+	var newEntry *storage.EntryData
+	newerIndex := newer.dataStartIndex
+	newerFile, err := os.Open(newer.FilePath)
+	if err != nil {
+		return nil, fmt.Errorf("Could not open newer segment file: %w", err)
+	}
+	defer newerFile.Close()
+
+	_, err = f.Seek(int64(newerIndex), io.SeekStart)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to seek to index pos %d: %w", newerIndex, err)
+	}
+
+	dataStartIndex := position
+
+	for newerIndex < newer.numEntries || olderIndex < older.numEntries {
+		if newerIndex >= newer.dataEndIndex {
+			entry, _, err := storage.ReadLogEntry(olderFile)
+			if err != nil {
+				return nil, fmt.Errorf("Failed to read entry from older table: %w", err)
+			}
 			olderIndex += 1
+			insertMerged(*entry)
+			continue
+		} else if olderIndex >= older.dataEndIndex {
+			entry, _, err := storage.ReadLogEntry(newerFile)
+			if err != nil {
+				return nil, fmt.Errorf("Failed to read entry from newer table: %w", err)
+			}
+			newerIndex += 1
+			insertMerged(*entry)
 			continue
 		}
 
-		if olderIndex >= olderSize {
-			new := newerEntries[newerIndex]
-			if !last || !new.Deleted {
-				merged = append(merged, new)
+		// Keep latest entries in memory.
+		// Compare both, insert in order.
+		// Advance whichever one was inserted.
+		if newEntry == nil {
+			newEntry, _, err = storage.ReadLogEntry(newerFile)
+			if err != nil {
+				return nil, fmt.Errorf("Failed to read entry from newer table: %w", err)
 			}
 			newerIndex += 1
-			continue
+		}
+		if oldEntry == nil {
+			oldEntry, _, err = storage.ReadLogEntry(olderFile)
+			if err != nil {
+				return nil, fmt.Errorf("Failed to read entry from older table: %w", err)
+			}
+			olderIndex += 1
 		}
 
-		new, old := newerEntries[newerIndex], olderEntries[olderIndex]
-
-		if new.Key > old.Key {
-			merged = append(merged, old)
-			olderIndex += 1
-		} else if new.Key == old.Key {
-			if !last || !new.Deleted {
-				merged = append(merged, new)
-			}
-			olderIndex += 1
-			newerIndex += 1
+		if newEntry.Key > oldEntry.Key {
+			insertMerged(*oldEntry)
+			oldEntry = nil
+		} else if newEntry.Key == oldEntry.Key {
+			// Newer value gets priority
+			insertMerged(*newEntry)
+			newEntry = nil
+			oldEntry = nil
 		} else {
-			if !last || !new.Deleted {
-				merged = append(merged, new)
-			}
-			newerIndex += 1
+			insertMerged(*newEntry)
+			newEntry = nil
 		}
 	}
-	return Create(newFilePath, merged)
+
+	dataEndIndex := position
+
+	// Write bloom filter to file.
+	n, err = writeBloomFilter(f, filter)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to write bloom filter: %w", err)
+	}
+	position += n
+
+	// Write index to file.
+	n, err = writeIndex(f, index)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to write index: %w", err)
+	}
+	position += n
+
+	n, err = writeFooter(f, segmentFooter{
+		NumEntries:   uint64(totalEntries),
+		DataEndIndex: uint64(dataEndIndex),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("Failed to write footer: %w", err)
+	}
+	position += n
+
+	return &Table{
+		FilePath:       newFilePath,
+		filter:         filter,
+		dataStartIndex: dataStartIndex,
+		dataEndIndex:   dataEndIndex,
+		index:          index,
+		numEntries:     totalEntries,
+	}, nil
 }
 
 func (t *Table) Search(key string) (*storage.EntryData, error) {
