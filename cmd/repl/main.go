@@ -97,9 +97,41 @@ func help(out io.Writer) {
 	io.WriteString(out, "  (q)uit\n")
 }
 
+func handleCommand(db *lsm.LSMTree, out io.Writer, cmdLine string) bool {
+	parts := strings.Split(cmdLine, " ")
+	cmd, args := parts[0], parts[1:]
+	var err error
+
+	switch cmd {
+	case "insert", "i":
+		err = insert(db, out, args...)
+	case "search", "s":
+		err = search(db, out, args...)
+	case "remove", "r":
+		err = remove(db, out, args...)
+	case "print", "p":
+		err = printObject(db, out, args...)
+	case "flush", "f":
+		err = flush(db, out)
+	case "help", "h":
+		help(out)
+	case "quit", "q":
+		return false
+	default:
+		io.WriteString(out, fmt.Sprintf("Unknown command: %s\n", cmd))
+	}
+
+	if err != nil {
+		io.WriteString(out, fmt.Sprintf("Error executing command %s: %v\n", cmd, err))
+	}
+
+	return true
+}
+
 func main() {
 
 	dataDirPtr := flag.String("data-dir", "./.bigsby", "Directory to store data.")
+	cmd := flag.String("cmd", "", "Command to execute instead of starting a REPL.")
 	compactionLimitPtr := flag.Int("compaction-limit", 1000, "Limit (bytes) for compaction")
 	flag.Parse()
 
@@ -116,6 +148,11 @@ func main() {
 		panic(fmt.Sprintf("Could not create db: %v", err))
 	}
 
+	if *cmd != "" {
+		handleCommand(db, out, *cmd)
+		return
+	}
+
 	io.WriteString(out, "Running BigsbyDB\n")
 	running := true
 	for running {
@@ -128,36 +165,9 @@ func main() {
 		err = scanner.Err()
 		if err != nil {
 			io.WriteString(out, fmt.Sprintf("Scan err: %v\n", err))
-
 		}
 
 		line := scanner.Text()
-
-		parts := strings.Split(line, " ")
-		cmd, args := parts[0], parts[1:]
-		var err error
-
-		switch cmd {
-		case "insert", "i":
-			err = insert(db, out, args...)
-		case "search", "s":
-			err = search(db, out, args...)
-		case "remove", "r":
-			err = remove(db, out, args...)
-		case "print", "p":
-			err = printObject(db, out, args...)
-		case "flush", "f":
-			err = flush(db, out)
-		case "help", "h":
-			help(out)
-		case "quit", "q":
-			running = false
-		default:
-			io.WriteString(out, fmt.Sprintf("Unknown command: %s\n", cmd))
-		}
-
-		if err != nil {
-			io.WriteString(out, fmt.Sprintf("Error executing command %s: %v\n", cmd, err))
-		}
+		running = handleCommand(db, out, line)
 	}
 }
